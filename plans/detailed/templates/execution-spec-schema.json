@@ -1,0 +1,105 @@
+{
+  "title": "ExecutionSpec",
+  "type": "object",
+  "required": [
+    "title",
+    "goal",
+    "definition_of_done",
+    "constraints",
+    "repo_targets",
+    "required_artifacts",
+    "gates_required"
+  ],
+  "properties": {
+    "title": {
+      "type": "string"
+    },
+    "goal": {
+      "type": "string"
+    },
+    "definition_of_done": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "constraints": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "repo_targets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "path",
+          "intent"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "intent": {
+            "type": "string"
+          },
+          "symbols": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    "required_artifacts": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "gates_required": {
+      "type": "object",
+      "properties": {
+        "write": {
+          "type": "boolean"
+        },
+        "run": {
+          "type": "boolean"
+        },
+        "destructive": {
+          "type": "boolean"
+        }
+      }
+    },
+    "budgets": {
+      "type": "object",
+      "properties": {
+        "max_steps": {
+          "type": "integer"
+        },
+        "max_tool_calls": {
+          "type": "integer"
+        },
+        "max_runtime_seconds": {
+          "type": "integer"
+        }
+      }
+    },
+    "privacy": {
+      "type": "object",
+      "properties": {
+        "allow_external_models": {
+          "type": "boolean"
+        },
+        "sensitive_paths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

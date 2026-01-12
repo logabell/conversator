@@ -1,0 +1,75 @@
+version: "1"
+
+# Conversator layer (subagents for planning/refinement)
+# Uses OpenCode HTTP Serve API on port 4096
+# Instance isolation: Uses OPENCODE_CONFIG_DIR to avoid conflicting with user's .opencode/
+conversator:
+  port: 4096
+  # Version-controlled agent source (edit these to iterate on agents)
+  agents_source: conversator/agents
+  # Runtime location (copied from source at startup, gitignored)
+  agents_runtime: .conversator/opencode/agent
+  # OpenCode config directory (isolated from user's .opencode/)
+  opencode_config_dir: .conversator/opencode
+
+# Voice interface
+voice:
+  provider: gemini-live
+  model: gemini-2.0-flash-exp
+  system_prompt: .conversator/prompts/conversator.md
+  api_key_env: GOOGLE_API_KEY
+
+# Builder agents (multiple, parallel capable)
+builders:
+  claude-code:
+    type: claude-code-sdk
+    # Uses Max subscription OAuth
+    modes:
+      plan: opus      # Deep planning
+      build: sonnet   # Implementation
+    worktree_prefix: claude-wt-
+
+  opencode-fast:
+    type: opencode
+    port: 8002
+    model: google/gemini-2.0-flash
+    worktree_prefix: oc-fast-wt-
+
+  opencode-pro:
+    type: opencode
+    port: 8003
+    model: google/gemini-2.0-pro
+    worktree_prefix: oc-pro-wt-
+
+# Automatic routing rules (when user doesn't specify)
+routing:
+  default: opencode-fast
+  rules:
+    - match: { complexity: high }
+      agent: claude-code
+      mode: plan
+    - match: { type: security }
+      agent: claude-code
+    - match: { type: refactor, scope: large }
+      agent: claude-code
+      mode: plan
+    - match: { complexity: low }
+      agent: opencode-fast
+
+# Subagent models
+models:
+  planner: google/gemini-2.0-flash
+  summarizer: google/gemini-2.0-flash-lite
+  context_reader: google/gemini-2.0-flash
+
+# Token budgets
+budgets:
+  voice_context_tokens: 900
+  subagent_context_tokens: 4000
+
+# Task orchestration
+orchestration:
+  # Primary: Beads CLI for task queue
+  primary: beads
+  # Alternative: vibe-kanban for visual task board
+  fallback: vibe-kanban
