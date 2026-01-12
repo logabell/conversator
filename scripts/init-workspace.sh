@@ -9,8 +9,12 @@
 
 set -e
 
-WORKSPACE_ROOT="${1:-.conversator}"
-AGENTS_SOURCE="conversator/agents"
+# Get absolute paths regardless of where script is run from
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+
+WORKSPACE_ROOT="${PROJECT_ROOT}/.conversator"
+AGENTS_SOURCE="${PROJECT_ROOT}/conversator/agents"
 
 echo "Initializing Conversator workspace at $WORKSPACE_ROOT"
 
