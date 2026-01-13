@@ -1,5 +1,8 @@
 version: "1"
 
+# Root directory where projects are located/created
+root_project_dir: /home/logabell/projects
+
 # Conversator layer (subagents for planning/refinement)
 # Uses OpenCode HTTP Serve API on port 4096
 # Instance isolation: Uses OPENCODE_CONFIG_DIR to avoid conflicting with user's .opencode/
@@ -19,31 +22,25 @@ voice:
   system_prompt: .conversator/prompts/conversator.md
   api_key_env: GOOGLE_API_KEY
 
-# Builder agents (multiple, parallel capable)
+# Builder agents - external coding CLI agents that receive final prompts
 builders:
+  # Claude Code via SDK (when available)
   claude-code:
     type: claude-code-sdk
-    # Uses Max subscription OAuth
     modes:
       plan: opus      # Deep planning
       build: sonnet   # Implementation
     worktree_prefix: claude-wt-
 
-  opencode-fast:
+  # Generic OpenCode builder (user's external instance for development)
+  opencode:
     type: opencode
-    port: 8002
-    model: google/gemini-2.0-flash
-    worktree_prefix: oc-fast-wt-
-
-  opencode-pro:
-    type: opencode
-    port: 8003
-    model: google/gemini-2.0-pro
-    worktree_prefix: oc-pro-wt-
+    port: 8001
+    worktree_prefix: oc-wt-
 
 # Automatic routing rules (when user doesn't specify)
 routing:
-  default: opencode-fast
+  default: opencode
   rules:
     - match: { complexity: high }
       agent: claude-code
@@ -53,14 +50,12 @@ routing:
     - match: { type: refactor, scope: large }
       agent: claude-code
       mode: plan
-    - match: { complexity: low }
-      agent: opencode-fast
 
-# Subagent models
+# Subagent models (used by Conversator layer)
 models:
-  planner: google/gemini-2.0-flash
-  summarizer: google/gemini-2.0-flash-lite
-  context_reader: google/gemini-2.0-flash
+  planner: opencode/gemini-3-flash
+  summarizer: opencode/gemini-3-flash
+  context_reader: opencode/gemini-3-flash
 
 # Token budgets
 budgets:

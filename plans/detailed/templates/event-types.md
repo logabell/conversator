@@ -17,6 +17,11 @@
 - BuildFailed
 - TaskCanceled
 
+## Quick dispatch (immediate operations)
+- QuickDispatchRequested  # User requested a quick operation
+- QuickDispatchExecuted   # Operation completed (includes command, result, builder used)
+- QuickDispatchBlocked    # Operation blocked (needs full planning workflow)
+
 ## Inbox severity mapping
 - info: normal progress
 - success: completed milestones

@@ -17,12 +17,17 @@ dependencies = [
     "httpx>=0.27.0",
     "aiofiles>=24.1.0",
     "pyyaml>=6.0",
+    "numpy>=1.24.0",
+    "sounddevice>=0.4.6",
     # VoxType for Wayland audio (Linux)
     # "voxtype>=0.1.0",  # Uncomment when available
     # Discord voice
     "discord.py[voice]>=2.3.0",
     # Telegram voice
     "python-telegram-bot>=21.0",
+    # Dashboard API
+    "fastapi>=0.109.0",
+    "uvicorn[standard]>=0.27.0",
 ]
 
 [project.optional-dependencies]

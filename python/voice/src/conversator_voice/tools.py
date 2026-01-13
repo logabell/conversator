@@ -4,6 +4,72 @@ from typing import Any
 
 # Tool definitions that Gemini Live can use to interact with Conversator
 CONVERSATOR_TOOLS: list[dict[str, Any]] = [
+    # === Project Management Tools ===
+    # These tools help set up the project context before coding work begins
+    {
+        "name": "list_projects",
+        "description": """List available projects in the workspace directory.
+        Call this when user asks what projects exist, wants to see options,
+        or when you need to help them choose a project to work on.
+        Returns project names that have version control or project markers.""",
+        "parameters": {
+            "type": "object",
+            "properties": {}
+        }
+    },
+    {
+        "name": "select_project",
+        "description": """Select a project to work on. This sets the project context
+        for the builder. Call when user specifies which project they want to work on,
+        like 'let's work on my-app' or 'open the website project'.""",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "project_name": {
+                    "type": "string",
+                    "description": "Name of the project folder to select"
+                }
+            },
+            "required": ["project_name"]
+        }
+    },
+    {
+        "name": "start_builder",
+        "description": """Start the coding agent (OpenCode) in the current project directory.
+        Call after selecting a project with select_project. This launches the builder
+        so it can execute coding tasks in the selected project. You can combine this
+        with select_project in a single turn when user says 'let's work on X'.""",
+        "parameters": {
+            "type": "object",
+            "properties": {}
+        }
+    },
+    {
+        "name": "create_project",
+        "description": """Create a new project folder in the workspace directory.
+        Use when user wants to start a new project from scratch.
+        Creates the folder, optionally initializes git, then selects it and starts the builder.
+        Example: 'create a new project called my-app' or 'start a new project for the website'.""",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "project_name": {
+                    "type": "string",
+                    "description": "Name for the new project folder (use lowercase with dashes, e.g., 'my-new-app')"
+                },
+                "init_git": {
+                    "type": "boolean",
+                    "description": "Initialize git repository in the new project. Default: true"
+                },
+                "start_builder_after": {
+                    "type": "boolean",
+                    "description": "Automatically select and start the builder in the new project. Default: true"
+                }
+            },
+            "required": ["project_name"]
+        }
+    },
+    # === Planning and Context Tools ===
     {
         "name": "engage_planner",
         "description": """Engage the planner subagent to refine a task or problem
@@ -81,7 +147,7 @@ CONVERSATOR_TOOLS: list[dict[str, Any]] = [
                 },
                 "agent": {
                     "type": "string",
-                    "enum": ["auto", "claude-code", "opencode-fast", "opencode-pro"],
+                    "enum": ["auto", "claude-code", "opencode"],
                     "description": "Which agent to use. 'auto' uses routing rules based on complexity."
                 },
                 "mode": {
@@ -219,6 +285,98 @@ CONVERSATOR_TOOLS: list[dict[str, Any]] = [
                     "description": "Brief summary to confirm with user before freezing"
                 }
             }
+        }
+    },
+    {
+        "name": "quick_dispatch",
+        "description": """Execute a simple, quick operation immediately via a fast builder.
+        Use for read-only queries (git status, ls, tree, file checks) and simple
+        mutations (mkdir, touch, git checkout branch). Operations run through
+        the builder layer with proper audit trails.
+
+        NOT for: complex builds, refactoring, destructive operations (rm, force),
+        or anything requiring planning. Those should use engage_planner first.""",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "operation": {
+                    "type": "string",
+                    "enum": ["query", "simple_mutation"],
+                    "description": "Type: 'query' for read-only (ls, git status), 'simple_mutation' for safe writes (mkdir, touch)"
+                },
+                "command": {
+                    "type": "string",
+                    "description": "The command to execute (e.g., 'mkdir my-project', 'git status', 'ls -la')"
+                },
+                "working_dir": {
+                    "type": "string",
+                    "description": "Optional working directory (default: project root)"
+                }
+            },
+            "required": ["operation", "command"]
+        }
+    },
+    {
+        "name": "engage_brainstormer",
+        "description": """Engage the brainstormer subagent for free-form ideation
+        and discussion. Use for exploring ideas, discussing trade-offs,
+        thinking through approaches, or creative problem-solving.
+        Unlike the planner (which produces prompts), brainstormer is for
+        open-ended exploration.""",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "topic": {
+                    "type": "string",
+                    "description": "What to brainstorm or discuss"
+                },
+                "context": {
+                    "type": "string",
+                    "description": "Relevant context for the discussion"
+                },
+                "constraints": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Any constraints to keep in mind"
+                }
+            },
+            "required": ["topic"]
+        }
+    },
+    {
+        "name": "get_builder_plan",
+        "description": """Get the plan response from a builder in plan mode.
+        Use after dispatch_to_builder with mode='plan' to see what the builder
+        proposes before implementation begins.""",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "task_id": {
+                    "type": "string",
+                    "description": "Task ID to get plan for"
+                }
+            },
+            "required": ["task_id"]
+        }
+    },
+    {
+        "name": "approve_builder_plan",
+        "description": """Approve the builder's plan and start implementation.
+        Use after reviewing the plan from get_builder_plan. User says
+        'looks good', 'start building', 'go ahead', 'implement it', etc.""",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "task_id": {
+                    "type": "string",
+                    "description": "Task ID to approve"
+                },
+                "modifications": {
+                    "type": "string",
+                    "description": "Optional modifications to the plan before building"
+                }
+            },
+            "required": ["task_id"]
         }
     }
 ]

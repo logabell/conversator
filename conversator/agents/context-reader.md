@@ -1,7 +1,7 @@
 ---
 description: Retrieves relevant context from codebase and memory
 mode: subagent
-model: google/gemini-2.0-flash
+model: opencode/gemini-3-flash
 temperature: 0.1
 tools:
   read: true

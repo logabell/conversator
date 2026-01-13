@@ -1,7 +1,7 @@
 ---
 description: Refines vague requests into optimized builder prompts
 mode: subagent
-model: google/gemini-2.0-flash
+model: opencode/gemini-3-flash
 temperature: 0.3
 tools:
   read: true

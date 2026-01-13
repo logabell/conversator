@@ -30,6 +30,17 @@ mkdir -p "$WORKSPACE_ROOT/scratchpad"
 # Create isolated OpenCode config directory (runtime only, gitignored)
 mkdir -p "$WORKSPACE_ROOT/opencode/agent"
 
+# Symlink to default OpenCode config and auth
+# This allows the isolated instance to use the same provider/auth as the user's default
+if [ -f "$HOME/.opencode/config.json" ]; then
+    ln -sf "$HOME/.opencode/config.json" "$WORKSPACE_ROOT/opencode/config.json"
+    echo "  Linked OpenCode config from ~/.opencode/config.json"
+fi
+if [ -f "$HOME/.local/share/opencode/auth.json" ]; then
+    ln -sf "$HOME/.local/share/opencode/auth.json" "$WORKSPACE_ROOT/opencode/auth.json"
+    echo "  Linked OpenCode auth from ~/.local/share/opencode/auth.json"
+fi
+
 # Initialize JSON files if they don't exist
 if [ ! -f "$WORKSPACE_ROOT/cache/agent-status.json" ]; then
     echo '{"agents": {}, "updated_at": null}' > "$WORKSPACE_ROOT/cache/agent-status.json"

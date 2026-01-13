@@ -1,7 +1,7 @@
 ---
 description: Condenses builder outputs for voice delivery
 mode: subagent
-model: google/gemini-2.0-flash-lite
+model: opencode/gemini-3-flash
 temperature: 0.1
 maxSteps: 3
 tools:

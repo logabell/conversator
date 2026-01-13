@@ -1,0 +1,4 @@
+# Memory index - keyword to file/topic mappings
+# Format: keyword: [file1, file2, ...]
+keywords: {}
+files: {}

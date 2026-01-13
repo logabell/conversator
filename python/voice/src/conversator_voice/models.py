@@ -91,6 +91,7 @@ class ConversatorTask:
     title: str = "Untitled Task"
     status: TaskStatus = "draft"
     priority: int = 0
+    project_root: str | None = None  # Target project directory
     created_at: datetime = field(default_factory=datetime.utcnow)
     updated_at: datetime = field(default_factory=datetime.utcnow)
     beads_id: str | None = None
@@ -107,6 +108,7 @@ class ConversatorTask:
             "title": self.title,
             "status": self.status,
             "priority": self.priority,
+            "project_root": self.project_root,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
             "working_prompt_path": self.working_prompt_path,
@@ -124,6 +126,7 @@ class ConversatorTask:
             title=data["title"],
             status=data["status"],
             priority=data.get("priority", 0),
+            project_root=data.get("project_root"),
             created_at=datetime.fromisoformat(data["created_at"]),
             updated_at=datetime.fromisoformat(data["updated_at"]),
             working_prompt_path=data.get("working_prompt_path"),
@@ -231,11 +234,16 @@ class TaskMapping:
 
 # Event payload helpers
 
-def create_task_created_payload(title: str, working_prompt_path: str | None = None) -> dict:
+def create_task_created_payload(
+    title: str,
+    working_prompt_path: str | None = None,
+    project_root: str | None = None
+) -> dict:
     """Create payload for TaskCreated event."""
     return {
         "title": title,
-        "working_prompt_path": working_prompt_path
+        "working_prompt_path": working_prompt_path,
+        "project_root": project_root
     }
 
 

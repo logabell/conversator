@@ -1,0 +1,11 @@
+opencode server listening on http://127.0.0.1:8002
+opencode server listening on http://127.0.0.1:8002
+[91m[1mError: [0mUnexpected error, check log file at /home/logabell/.local/share/opencode/log/2026-01-13T030107.log for more details
+
+error: Failed to start server on port 8002
+      at listen (src/server/server.ts:2870:28)
+      at src/cli/cmd/serve.ts:11:27
+      at processTicksAndRejections (native:7:39)
+
+opencode server listening on http://127.0.0.1:8002
+opencode server listening on http://127.0.0.1:8002

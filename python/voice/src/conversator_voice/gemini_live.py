@@ -7,10 +7,12 @@ from typing import Any, Callable
 from google import genai
 from google.genai import types
 
+from .config import ConversatorConfig
 from .handlers import ToolHandler
 from .state import StateStore
 from .models import ConversatorTask
 from .prompt_manager import PromptManager
+from .dashboard.conversation_logger import ConversationLogger
 
 
 class ConversatorVoice:
@@ -36,6 +38,7 @@ class ConversatorVoice:
         self.system_prompt = self._load_system_prompt(system_prompt_path)
         self.session = None
         self.tool_handler: ToolHandler | None = None
+        self.conversation_logger: ConversationLogger | None = None
         self._connected = False
         self._session_context = None
 
@@ -71,17 +74,27 @@ Be concise - this is voice, not text."""
         """
         self.tool_handler = tool_handler
 
-        # Build config with voice activity detection (use defaults)
+        # Live API requires tools as raw dicts, not SDK types
+        # See: https://ai.google.dev/gemini-api/docs/live-tools
+        # Format: [{"function_declarations": [{"name": "...", "description": "...", "parameters": {...}}]}]
+        tool_config = [{"function_declarations": tools}]
+
+        tool_names = [t["name"] for t in tools]
+        print(f"[DEBUG] Registering {len(tools)} tools with Live API: {', '.join(tool_names[:5])}{'...' if len(tools) > 5 else ''}")
+
+        # Build config with tools and voice activity detection
         config = types.LiveConnectConfig(
             response_modalities=["AUDIO"],
             system_instruction=types.Content(
                 parts=[types.Part(text=self.system_prompt)]
             ),
+            # Tools must be raw dicts for Live API
+            tools=tool_config,
             # Speech config for output
             speech_config=types.SpeechConfig(
                 voice_config=types.VoiceConfig(
                     prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                        voice_name="Puck"  # Options: Puck, Charon, Kore, Fenrir, Aoede
+                        voice_name="Kore"  # Options: Puck, Charon, Kore, Fenrir, Aoede
                     )
                 )
             ),
@@ -192,6 +205,9 @@ Be concise - this is voice, not text."""
                     flags.append('INTERRUPTED')
                 if hasattr(sc, 'input_transcription') and sc.input_transcription:
                     print(f"[Transcription: {sc.input_transcription}]")
+                    # Log to conversation logger for dashboard
+                    if self.conversation_logger:
+                        await self.conversation_logger.log_user_speech(sc.input_transcription)
                 if flags:
                     print(f"[Response #{response_count}: {flags}]")
 
@@ -255,6 +271,9 @@ Be concise - this is voice, not text."""
                     print(f"[Conversator]: {part.text}")
                     if text_callback:
                         await text_callback(part.text)
+                    # Log to conversation logger for dashboard
+                    if self.conversation_logger:
+                        await self.conversation_logger.log_assistant_response(part.text)
 
     async def _handle_tool_calls(
         self,
@@ -301,7 +320,17 @@ Be concise - this is voice, not text."""
         Returns:
             Tool result
         """
+        # Log tool call start for dashboard
+        if self.conversation_logger:
+            await self.conversation_logger.log_tool_call_start(name, args)
+
         handlers = {
+            # Project management
+            "list_projects": self.tool_handler.handle_list_projects,
+            "select_project": self.tool_handler.handle_select_project,
+            "start_builder": self.tool_handler.handle_start_builder,
+            "create_project": self.tool_handler.handle_create_project,
+            # Planning and context
             "engage_planner": self.tool_handler.handle_engage_planner,
             "lookup_context": self.tool_handler.handle_lookup_context,
             "check_status": self.tool_handler.handle_check_status,
@@ -312,16 +341,33 @@ Be concise - this is voice, not text."""
             "acknowledge_inbox": self.tool_handler.handle_acknowledge_inbox,
             "update_working_prompt": self.tool_handler.handle_update_working_prompt,
             "freeze_prompt": self.tool_handler.handle_freeze_prompt,
+            # Quick dispatch for simple operations (replaces run_command)
+            "quick_dispatch": self.tool_handler.handle_quick_dispatch,
+            "engage_brainstormer": self.tool_handler.handle_engage_brainstormer,
+            "get_builder_plan": self.tool_handler.handle_get_builder_plan,
+            "approve_builder_plan": self.tool_handler.handle_approve_builder_plan,
         }
 
         handler = handlers.get(name)
         if handler:
             try:
-                return await handler(**args)
+                result = await handler(**args)
+                # Log tool call completion for dashboard
+                if self.conversation_logger:
+                    await self.conversation_logger.log_tool_call_complete(name, result)
+                return result
             except Exception as e:
-                return {"error": str(e)}
+                error_result = {"error": str(e)}
+                # Log tool call error for dashboard
+                if self.conversation_logger:
+                    await self.conversation_logger.log_tool_call_complete(name, error_result)
+                return error_result
 
-        return {"error": f"Unknown tool: {name}"}
+        unknown_result = {"error": f"Unknown tool: {name}"}
+        # Log unknown tool for dashboard
+        if self.conversation_logger:
+            await self.conversation_logger.log_tool_call_complete(name, unknown_result)
+        return unknown_result
 
 
 class ConversatorSession:
@@ -331,7 +377,8 @@ class ConversatorSession:
         self,
         api_key: str,
         opencode_url: str = "http://localhost:8001",
-        workspace_path: str = ".conversator"
+        workspace_path: str = ".conversator",
+        config: ConversatorConfig | None = None
     ):
         """Initialize session.
 
@@ -339,12 +386,15 @@ class ConversatorSession:
             api_key: Google API key
             opencode_url: OpenCode server URL
             workspace_path: Path to .conversator workspace directory
+            config: Optional configuration (will load from file if not provided)
         """
         from .opencode_client import OpenCodeClient
         from .tools import CONVERSATOR_TOOLS
 
         self.api_key = api_key
         self.workspace_path = Path(workspace_path)
+        self.config = config or ConversatorConfig.load()
+        self.root_project_dir = self.config.root_project_dir
         self.opencode = OpenCodeClient(opencode_url)
 
         # Initialize state store first
@@ -354,13 +404,17 @@ class ConversatorSession:
         # Initialize prompt manager
         self.prompt_manager = PromptManager(self.workspace_path, state=self.state)
 
-        # Pass state and prompt_manager to tool handler
+        # Pass state, prompt_manager, and config to tool handler
         self.tool_handler = ToolHandler(
             self.opencode,
             state=self.state,
-            prompt_manager=self.prompt_manager
+            prompt_manager=self.prompt_manager,
+            config=self.config
         )
-        self.conversator = ConversatorVoice(api_key)
+
+        # Use system prompt path from config
+        system_prompt_path = self.config.voice_system_prompt
+        self.conversator = ConversatorVoice(api_key, system_prompt_path=system_prompt_path)
         self.tools = CONVERSATOR_TOOLS
 
     async def start(self) -> None:

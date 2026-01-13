@@ -32,8 +32,8 @@ class OpenCodeClient:
     async def health_check(self) -> bool:
         """Check if OpenCode server is healthy."""
         try:
-            # OpenCode uses /session/status or just try listing sessions
-            response = await self.client.get(f"{self.base_url}/session/status")
+            # Use /agent endpoint - most reliable for OpenCode
+            response = await self.client.get(f"{self.base_url}/agent")
             return response.status_code == 200
         except httpx.RequestError:
             return False

@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     title TEXT NOT NULL,
     status TEXT NOT NULL,
     priority INTEGER DEFAULT 0,
+    project_root TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     working_prompt_path TEXT,
@@ -91,12 +92,38 @@ class StateStore:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(str(self.db_path))
         self.conn.row_factory = sqlite3.Row
+        self._event_listeners: list = []
         self._init_schema()
+
+    def add_event_listener(self, callback) -> None:
+        """Add a callback to be notified of new events.
+
+        Args:
+            callback: Function to call with new events.
+                      Signature: callback(event: TaskEvent) -> None
+        """
+        self._event_listeners.append(callback)
+
+    def remove_event_listener(self, callback) -> None:
+        """Remove an event listener.
+
+        Args:
+            callback: The callback to remove
+        """
+        if callback in self._event_listeners:
+            self._event_listeners.remove(callback)
 
     def _init_schema(self) -> None:
         """Initialize database schema."""
         self.conn.executescript(SCHEMA)
         self.conn.commit()
+
+        # Migration: Add project_root column if it doesn't exist
+        try:
+            self.conn.execute("SELECT project_root FROM tasks LIMIT 1")
+        except sqlite3.OperationalError:
+            self.conn.execute("ALTER TABLE tasks ADD COLUMN project_root TEXT")
+            self.conn.commit()
 
     def close(self) -> None:
         """Close the database connection."""
@@ -131,6 +158,14 @@ class StateStore:
         # Update derived state based on event type
         self._apply_event(event)
         self.conn.commit()
+
+        # Notify listeners
+        for listener in self._event_listeners:
+            try:
+                listener(event)
+            except Exception:
+                # Don't let listener errors break event processing
+                pass
 
         return event_id
 
@@ -242,6 +277,7 @@ class StateStore:
             title=row["title"],
             status=row["status"],
             priority=row["priority"],
+            project_root=row["project_root"],
             created_at=datetime.fromisoformat(row["created_at"]),
             updated_at=datetime.fromisoformat(row["updated_at"]),
             working_prompt_path=row["working_prompt_path"],
@@ -404,14 +440,15 @@ class StateStore:
             self.conn.execute(
                 """
                 INSERT INTO tasks (
-                    task_id, title, status, priority,
+                    task_id, title, status, priority, project_root,
                     created_at, updated_at, working_prompt_path, last_event_id
                 )
-                VALUES (?, ?, 'draft', 0, ?, ?, ?, ?)
+                VALUES (?, ?, 'draft', 0, ?, ?, ?, ?, ?)
                 """,
                 (
                     event.task_id,
                     payload.get("title", "Untitled Task"),
+                    payload.get("project_root"),
                     event.time.isoformat(),
                     now,
                     payload.get("working_prompt_path"),
@@ -628,12 +665,18 @@ class StateStore:
 
     # --- High-Level Helpers ---
 
-    def create_task(self, title: str, working_prompt_path: str | None = None) -> ConversatorTask:
+    def create_task(
+        self,
+        title: str,
+        working_prompt_path: str | None = None,
+        project_root: str | None = None
+    ) -> ConversatorTask:
         """Create a new task with a TaskCreated event.
 
         Args:
             title: Task title
             working_prompt_path: Optional path to working prompt
+            project_root: Optional project directory path
 
         Returns:
             The created task
@@ -644,7 +687,7 @@ class StateStore:
         event = TaskEvent(
             type="TaskCreated",
             task_id=task_id,
-            payload=create_task_created_payload(title, working_prompt_path)
+            payload=create_task_created_payload(title, working_prompt_path, project_root)
         )
         self.append_event(event)
 
