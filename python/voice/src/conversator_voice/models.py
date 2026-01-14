@@ -2,9 +2,36 @@
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 from uuid import uuid4
 import json
+
+
+@dataclass
+class ToolResponse:
+    """Structured response from tool handlers.
+
+    The `result` dict is sent back to Gemini as the function/tool response.
+    Additional fields are used for side effects (voice feedback + ambient audio)
+    and must NOT be sent as separate Gemini turns during tool-call handling.
+
+    This object also behaves like a minimal mapping for backwards-compatible
+    internal usage (tests and call sites that expect a dict).
+    """
+
+    result: dict[str, Any]
+    voice_feedback: str | None = None
+    start_ambient: bool = False
+    stop_ambient: bool = False
+
+    def __getitem__(self, key: str) -> Any:
+        return self.result[key]
+
+    def __contains__(self, key: object) -> bool:
+        return key in self.result
+
+    def get(self, key: str, default: Any | None = None) -> Any:
+        return self.result.get(key, default)
 
 
 # Type aliases for status and event types
@@ -18,7 +45,7 @@ TaskStatus = Literal[
     "awaiting_user",
     "done",
     "failed",
-    "canceled"
+    "canceled",
 ]
 
 EventType = Literal[
@@ -35,19 +62,13 @@ EventType = Literal[
     "GateDenied",
     "BuildCompleted",
     "BuildFailed",
-    "TaskCanceled"
+    "TaskCanceled",
 ]
 
 InboxSeverity = Literal["info", "success", "warning", "error", "blocking"]
 
 BuilderStatus = Literal[
-    "created",
-    "running",
-    "paused",
-    "waiting_permission",
-    "completed",
-    "failed",
-    "aborted"
+    "created", "running", "paused", "waiting_permission", "completed", "failed", "aborted"
 ]
 
 
@@ -68,7 +89,7 @@ class TaskEvent:
             "time": self.time.isoformat(),
             "type": self.type,
             "task_id": self.task_id,
-            "payload": self.payload
+            "payload": self.payload,
         }
 
     @classmethod
@@ -79,7 +100,7 @@ class TaskEvent:
             time=datetime.fromisoformat(data["time"]),
             type=data["type"],
             task_id=data["task_id"],
-            payload=data.get("payload", {})
+            payload=data.get("payload", {}),
         )
 
 
@@ -114,7 +135,7 @@ class ConversatorTask:
             "working_prompt_path": self.working_prompt_path,
             "handoff_prompt_path": self.handoff_prompt_path,
             "builder_session_id": self.builder_session_id,
-            "last_event_id": self.last_event_id
+            "last_event_id": self.last_event_id,
         }
 
     @classmethod
@@ -132,7 +153,7 @@ class ConversatorTask:
             working_prompt_path=data.get("working_prompt_path"),
             handoff_prompt_path=data.get("handoff_prompt_path"),
             builder_session_id=data.get("builder_session_id"),
-            last_event_id=data.get("last_event_id", 0)
+            last_event_id=data.get("last_event_id", 0),
         )
 
 
@@ -155,7 +176,7 @@ class BuilderSession:
             "status": self.status,
             "started_at": self.started_at.isoformat(),
             "ended_at": self.ended_at.isoformat() if self.ended_at else None,
-            "artifacts": self.artifacts
+            "artifacts": self.artifacts,
         }
 
     @classmethod
@@ -167,7 +188,7 @@ class BuilderSession:
             status=data["status"],
             started_at=datetime.fromisoformat(data["started_at"]),
             ended_at=datetime.fromisoformat(data["ended_at"]) if data.get("ended_at") else None,
-            artifacts=data.get("artifacts", {})
+            artifacts=data.get("artifacts", {}),
         )
 
 
@@ -190,7 +211,7 @@ class InboxItem:
             "summary": self.summary,
             "refs": self.refs,
             "created_at": self.created_at.isoformat(),
-            "acknowledged_at": self.acknowledged_at.isoformat() if self.acknowledged_at else None
+            "acknowledged_at": self.acknowledged_at.isoformat() if self.acknowledged_at else None,
         }
 
     @classmethod
@@ -202,7 +223,9 @@ class InboxItem:
             summary=data["summary"],
             refs=data.get("refs", {}),
             created_at=datetime.fromisoformat(data["created_at"]),
-            acknowledged_at=datetime.fromisoformat(data["acknowledged_at"]) if data.get("acknowledged_at") else None
+            acknowledged_at=datetime.fromisoformat(data["acknowledged_at"])
+            if data.get("acknowledged_at")
+            else None,
         )
 
 
@@ -216,11 +239,7 @@ class TaskMapping:
 
     def to_dict(self) -> dict:
         """Convert to dictionary for JSON serialization."""
-        return {
-            "task_id": self.task_id,
-            "beads_id": self.beads_id,
-            "session_id": self.session_id
-        }
+        return {"task_id": self.task_id, "beads_id": self.beads_id, "session_id": self.session_id}
 
     @classmethod
     def from_dict(cls, data: dict) -> "TaskMapping":
@@ -228,31 +247,27 @@ class TaskMapping:
         return cls(
             task_id=data["task_id"],
             beads_id=data.get("beads_id"),
-            session_id=data.get("session_id")
+            session_id=data.get("session_id"),
         )
 
 
 # Event payload helpers
 
+
 def create_task_created_payload(
-    title: str,
-    working_prompt_path: str | None = None,
-    project_root: str | None = None
+    title: str, working_prompt_path: str | None = None, project_root: str | None = None
 ) -> dict:
     """Create payload for TaskCreated event."""
     return {
         "title": title,
         "working_prompt_path": working_prompt_path,
-        "project_root": project_root
+        "project_root": project_root,
     }
 
 
 def create_working_prompt_updated_payload(path: str, summary: str | None = None) -> dict:
     """Create payload for WorkingPromptUpdated event."""
-    return {
-        "path": path,
-        "summary": summary
-    }
+    return {"path": path, "summary": summary}
 
 
 def create_questions_raised_payload(questions: list[str]) -> dict:
@@ -267,10 +282,7 @@ def create_user_answered_payload(answers: dict[str, str]) -> dict:
 
 def create_handoff_frozen_payload(handoff_md_path: str, handoff_json_path: str) -> dict:
     """Create payload for HandoffFrozen event."""
-    return {
-        "handoff_md_path": handoff_md_path,
-        "handoff_json_path": handoff_json_path
-    }
+    return {"handoff_md_path": handoff_md_path, "handoff_json_path": handoff_json_path}
 
 
 def create_beads_task_linked_payload(beads_id: str) -> dict:
@@ -280,43 +292,29 @@ def create_beads_task_linked_payload(beads_id: str) -> dict:
 
 def create_builder_dispatched_payload(session_id: str, provider: str) -> dict:
     """Create payload for BuilderDispatched event."""
-    return {
-        "session_id": session_id,
-        "provider": provider
-    }
+    return {"session_id": session_id, "provider": provider}
 
 
-def create_builder_status_changed_payload(session_id: str, old_status: str, new_status: str) -> dict:
+def create_builder_status_changed_payload(
+    session_id: str, old_status: str, new_status: str
+) -> dict:
     """Create payload for BuilderStatusChanged event."""
-    return {
-        "session_id": session_id,
-        "old_status": old_status,
-        "new_status": new_status
-    }
+    return {"session_id": session_id, "old_status": old_status, "new_status": new_status}
 
 
 def create_gate_requested_payload(gate_type: str, description: str) -> dict:
     """Create payload for GateRequested event."""
-    return {
-        "gate_type": gate_type,
-        "description": description
-    }
+    return {"gate_type": gate_type, "description": description}
 
 
 def create_build_completed_payload(session_id: str, artifacts: dict) -> dict:
     """Create payload for BuildCompleted event."""
-    return {
-        "session_id": session_id,
-        "artifacts": artifacts
-    }
+    return {"session_id": session_id, "artifacts": artifacts}
 
 
 def create_build_failed_payload(session_id: str, error: str) -> dict:
     """Create payload for BuildFailed event."""
-    return {
-        "session_id": session_id,
-        "error": error
-    }
+    return {"session_id": session_id, "error": error}
 
 
 def create_task_canceled_payload(reason: str) -> dict:

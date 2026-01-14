@@ -14,8 +14,8 @@ class TestToolDefinitions:
 
     def test_correct_number_of_tools(self):
         """Expected number of tools defined."""
-        # Original 10 + 4 new (run_command, engage_brainstormer, get_builder_plan, approve_builder_plan)
-        assert len(CONVERSATOR_TOOLS) == 14
+        # Keep this in sync with conversator_voice.tools.CONVERSATOR_TOOLS
+        assert len(CONVERSATOR_TOOLS) == 19
 
     def test_all_tools_have_required_fields(self):
         """Each tool has name, description, and parameters."""
@@ -32,19 +32,30 @@ class TestToolDefinitions:
     def test_expected_tools_present(self):
         """All expected tools are defined."""
         expected = [
+            # Project management
+            "list_projects",
+            "select_project",
+            "start_builder",
+            "create_project",
+            # Planning and context
             "engage_planner",
+            "continue_planner",
             "lookup_context",
             "check_status",
             "dispatch_to_builder",
+            # Memory and control
             "add_to_memory",
             "cancel_task",
             "check_inbox",
             "acknowledge_inbox",
+            # Prompt workflow
             "update_working_prompt",
             "freeze_prompt",
-            # Quick dispatch for simple operations (replaces run_command)
+            # Safe shell helper
             "quick_dispatch",
+            # Brainstorming
             "engage_brainstormer",
+            # Builder review flow
             "get_builder_plan",
             "approve_builder_plan",
         ]
@@ -141,8 +152,7 @@ class TestSpecificTools:
         agent = tool["parameters"]["properties"]["agent"]
         assert "auto" in agent["enum"]
         assert "claude-code" in agent["enum"]
-        assert "opencode-fast" in agent["enum"]
-        assert "opencode-pro" in agent["enum"]
+        assert "opencode" in agent["enum"]
 
     def test_dispatch_to_builder_mode_enum(self):
         """dispatch_to_builder has plan/build modes."""

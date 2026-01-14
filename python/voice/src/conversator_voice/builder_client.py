@@ -40,10 +40,7 @@ class OpenCodeBuilder:
             return False
 
     async def dispatch_task(
-        self,
-        task_id: str,
-        prompt_path: str,
-        project_root: str | None = None
+        self, task_id: str, prompt_path: str, project_root: str | None = None
     ) -> dict[str, Any]:
         """Dispatch a task to this builder with project context.
 
@@ -71,14 +68,13 @@ All file operations should be relative to this directory.
 
         # Create session
         response = await self.client.post(
-            f"{self.base_url}/session",
-            json={"title": f"Task: {task_id[:8]}"}
+            f"{self.base_url}/session", json={"title": f"Task: {task_id[:8]}"}
         )
 
         if response.status_code not in (200, 201):
             return {
                 "dispatched": False,
-                "error": f"Failed to create session: {response.status_code}"
+                "error": f"Failed to create session: {response.status_code}",
             }
 
         session = response.json()
@@ -88,20 +84,17 @@ All file operations should be relative to this directory.
         # Send the prompt asynchronously
         prompt_response = await self.client.post(
             f"{self.base_url}/session/{session_id}/prompt_async",
-            json={"parts": [{"type": "text", "text": prompt_content}]}
+            json={"parts": [{"type": "text", "text": prompt_content}]},
         )
 
         if prompt_response.status_code not in (200, 201, 202):
             return {
                 "dispatched": False,
                 "session_id": session_id,
-                "error": f"Failed to send prompt: {prompt_response.status_code}"
+                "error": f"Failed to send prompt: {prompt_response.status_code}",
             }
 
-        return {
-            "dispatched": True,
-            "session_id": session_id
-        }
+        return {"dispatched": True, "session_id": session_id}
 
     async def get_session_status(self, task_id: str) -> str | None:
         """Get status of a builder session.
@@ -139,9 +132,10 @@ All file operations should be relative to this directory.
             return []
 
         try:
-            response = await self.client.get(f"{self.base_url}/session/{session_id}/messages")
+            # OpenCode server v1.1+: messages are listed at /session/:id/message
+            response = await self.client.get(f"{self.base_url}/session/{session_id}/message")
             if response.status_code == 200:
-                return response.json().get("messages", [])
+                return response.json()
         except Exception:
             pass
         return []
@@ -160,7 +154,8 @@ All file operations should be relative to this directory.
             return False
 
         try:
-            response = await self.client.post(f"{self.base_url}/session/{session_id}/cancel")
+            # OpenCode server v1.1+: abort a running session via /session/:id/abort
+            response = await self.client.post(f"{self.base_url}/session/{session_id}/abort")
             if response.status_code in (200, 204):
                 del self.active_sessions[task_id]
                 return True
@@ -169,10 +164,7 @@ All file operations should be relative to this directory.
         return False
 
     async def dispatch_task_plan_mode(
-        self,
-        task_id: str,
-        prompt_path: str,
-        project_root: str | None = None
+        self, task_id: str, prompt_path: str, project_root: str | None = None
     ) -> dict[str, Any]:
         """Dispatch to builder in plan mode (OpenCode's /plan).
 
@@ -203,14 +195,13 @@ All file operations should be relative to this directory.
 
         # Create session
         response = await self.client.post(
-            f"{self.base_url}/session",
-            json={"title": f"Plan: {task_id[:8]}"}
+            f"{self.base_url}/session", json={"title": f"Plan: {task_id[:8]}"}
         )
 
         if response.status_code not in (200, 201):
             return {
                 "dispatched": False,
-                "error": f"Failed to create session: {response.status_code}"
+                "error": f"Failed to create session: {response.status_code}",
             }
 
         session = response.json()
@@ -220,21 +211,21 @@ All file operations should be relative to this directory.
         # Send the plan prompt
         prompt_response = await self.client.post(
             f"{self.base_url}/session/{session_id}/prompt_async",
-            json={"parts": [{"type": "text", "text": plan_prompt}]}
+            json={"parts": [{"type": "text", "text": plan_prompt}]},
         )
 
         if prompt_response.status_code not in (200, 201, 202):
             return {
                 "dispatched": False,
                 "session_id": session_id,
-                "error": f"Failed to send prompt: {prompt_response.status_code}"
+                "error": f"Failed to send prompt: {prompt_response.status_code}",
             }
 
         return {
             "dispatched": True,
             "session_id": session_id,
             "mode": "plan",
-            "awaiting_review": True
+            "awaiting_review": True,
         }
 
     async def get_plan_response(self, task_id: str) -> dict[str, Any]:
@@ -251,30 +242,32 @@ All file operations should be relative to this directory.
             return {"error": "No plan session found"}
 
         try:
-            # Get session messages to extract the plan
-            response = await self.client.get(f"{self.base_url}/session/{session_id}/messages")
+            # OpenCode server v1.1+: messages are listed at /session/:id/message
+            response = await self.client.get(f"{self.base_url}/session/{session_id}/message")
             if response.status_code != 200:
                 return {"error": f"Failed to get messages: {response.status_code}"}
 
-            messages = response.json().get("messages", [])
+            messages = response.json()
 
-            # Find the assistant's plan response
+            # Find the latest assistant response and extract its text parts.
             plan_content = ""
             for msg in messages:
-                if msg.get("role") == "assistant":
-                    content = msg.get("content", "")
-                    if isinstance(content, list):
-                        # Handle structured content
-                        for part in content:
-                            if isinstance(part, dict) and part.get("type") == "text":
-                                plan_content = part.get("text", "")
-                    else:
-                        plan_content = content
+                info = msg.get("info", msg)
+                if info.get("role") != "assistant":
+                    continue
+
+                parts = msg.get("parts", [])
+                content = ""
+                for part in parts:
+                    if isinstance(part, dict) and part.get("type") == "text":
+                        content += part.get("text", "")
+                if content:
+                    plan_content = content
 
             if plan_content:
                 return {
                     "plan": plan_content,
-                    "session_id": session_id
+                    "session_id": session_id,
                 }
 
             return {"error": "No plan content found in session"}
@@ -282,11 +275,7 @@ All file operations should be relative to this directory.
         except Exception as e:
             return {"error": str(e)}
 
-    async def approve_and_build(
-        self,
-        task_id: str,
-        modifications: str = ""
-    ) -> dict[str, Any]:
+    async def approve_and_build(self, task_id: str, modifications: str = "") -> dict[str, Any]:
         """Exit plan mode and start building.
 
         Args:
@@ -309,23 +298,20 @@ All file operations should be relative to this directory.
 
             response = await self.client.post(
                 f"{self.base_url}/session/{session_id}/prompt_async",
-                json={"parts": [{"type": "text", "text": approval_msg}]}
+                json={"parts": [{"type": "text", "text": approval_msg}]},
             )
 
             if response.status_code not in (200, 201, 202):
                 return {
                     "building": False,
-                    "error": f"Failed to send approval: {response.status_code}"
+                    "error": f"Failed to send approval: {response.status_code}",
                 }
 
             # Move from plan_sessions to active_sessions
             self.active_sessions[task_id] = session_id
             del self.plan_sessions[task_id]
 
-            return {
-                "building": True,
-                "session_id": session_id
-            }
+            return {"building": True, "session_id": session_id}
 
         except Exception as e:
             return {"error": str(e)}

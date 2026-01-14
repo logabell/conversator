@@ -24,18 +24,26 @@ class ConversatorConfig:
     root_project_dir: str = "."
     conversator_port: int = 4096
 
+    @property
+    def opencode_base_url(self) -> str:
+        """Base URL for the Conversator-layer OpenCode server."""
+        return f"http://localhost:{self.conversator_port}"
+
     # Per-agent models
-    models: dict[str, str] = field(default_factory=lambda: {
-        "planner": "opencode/gemini-3-flash",
-        "context_reader": "opencode/gemini-3-flash",
-        "summarizer": "opencode/gemini-3-flash",
-    })
+    models: dict[str, str] = field(
+        default_factory=lambda: {
+            "planner": "opencode/gemini-3-flash",
+            "context_reader": "opencode/gemini-3-flash",
+            "summarizer": "opencode/gemini-3-flash",
+        }
+    )
 
     # Builder configs
     builders: dict[str, BuilderConfig] = field(default_factory=dict)
 
     # Voice config
     voice_system_prompt: str = ".conversator/prompts/conversator.md"
+    voice_speech_threshold: float = 1500.0  # RMS threshold for local speech detection
 
     # OpenCode orchestration config (Layer 2)
     # Auto-start is now smart - does proper setup like scripts/start-conversator.sh
@@ -74,9 +82,8 @@ class ConversatorConfig:
 
         # Parse voice config
         voice_data = data.get("voice", {})
-        voice_system_prompt = voice_data.get(
-            "system_prompt", ".conversator/prompts/conversator.md"
-        )
+        voice_system_prompt = voice_data.get("system_prompt", ".conversator/prompts/conversator.md")
+        voice_speech_threshold = float(voice_data.get("speech_threshold", 1500.0))
 
         # Parse OpenCode orchestration config from conversator section
         conversator_data = data.get("conversator", {})
@@ -87,11 +94,14 @@ class ConversatorConfig:
             models=data.get("models", {}),
             builders=builders,
             voice_system_prompt=voice_system_prompt,
+            voice_speech_threshold=voice_speech_threshold,
             # OpenCode settings from conversator section
             opencode_auto_start=conversator_data.get("auto_start", False),
             opencode_port=conversator_data.get("port", 4096),
             opencode_start_timeout=conversator_data.get("start_timeout", 30.0),
-            opencode_config_dir=conversator_data.get("opencode_config_dir", ".conversator/opencode"),
+            opencode_config_dir=conversator_data.get(
+                "opencode_config_dir", ".conversator/opencode"
+            ),
         )
 
     def get_model(self, agent_name: str) -> str:

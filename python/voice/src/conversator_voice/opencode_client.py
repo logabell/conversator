@@ -1,29 +1,37 @@
-"""OpenCode HTTP client for Conversator subagent orchestration.
+"""OpenCode HTTP client for Conversator.
 
-Uses the OpenCode HTTP Serve API:
-- POST /session - Create new session
-- GET  /session/{id} - Get session details
-- POST /session/{id}/message - Send message (sync)
-- POST /session/{id}/prompt_async - Send message (async)
-- GET  /event - SSE real-time events
-- GET  /agent - List available agents
+Uses the OpenCode HTTP server API (v1.1+):
+- POST /session
+- POST /session/:id/prompt_async
+- GET  /session/:id/message
+- GET  /agent
+
+Note: /event is a global SSE bus and is not relied on for message content here.
 """
 
+from __future__ import annotations
+
+import asyncio
 import json
+import time
 from pathlib import Path
-from typing import AsyncIterator
+from typing import Any, AsyncIterator, Awaitable, Callable
 
 import aiofiles
 import httpx
 
 
 class OpenCodeClient:
-    """Client for communicating with OpenCode subagents via HTTP API."""
+    """Client for communicating with OpenCode agents via HTTP API."""
 
     def __init__(self, base_url: str = "http://localhost:4096"):
-        self.base_url = base_url
-        self.client = httpx.AsyncClient(timeout=300)
+        self.base_url = base_url.rstrip("/")
+        # Message polling can run for a while; keep per-request timeouts modest but not tiny.
+        self.client = httpx.AsyncClient(timeout=httpx.Timeout(30.0, read=30.0))
         self.active_sessions: dict[str, str] = {}
+        self._activity_callback: Callable[[str, str, str, str | None], Awaitable[None]] | None = (
+            None
+        )
 
     async def close(self) -> None:
         """Close the HTTP client."""
@@ -32,18 +40,13 @@ class OpenCodeClient:
     async def health_check(self) -> bool:
         """Check if OpenCode server is healthy."""
         try:
-            # Use /agent endpoint - most reliable for OpenCode
             response = await self.client.get(f"{self.base_url}/agent")
             return response.status_code == 200
         except httpx.RequestError:
             return False
 
-    async def list_agents(self) -> list[dict]:
-        """List available agents from OpenCode.
-
-        Returns:
-            List of agent info dictionaries
-        """
+    async def list_agents(self) -> list[dict[str, Any]]:
+        """List available agents from OpenCode."""
         try:
             response = await self.client.get(f"{self.base_url}/agent")
             response.raise_for_status()
@@ -51,124 +54,213 @@ class OpenCodeClient:
         except httpx.RequestError:
             return []
 
-    async def engage_subagent(
-        self, agent: str, message: str
-    ) -> AsyncIterator[dict]:
-        """Create session and chat with subagent, streaming responses.
+    def set_activity_callback(
+        self,
+        callback: Callable[[str, str, str, str | None], Awaitable[None]],
+    ) -> None:
+        """Set callback for activity events during OpenCode polling."""
+        self._activity_callback = callback
 
-        Args:
-            agent: Name of the subagent (planner, context-reader, summarizer)
-            message: Initial message to send to the agent
+    async def _emit_activity(
+        self,
+        agent: str,
+        action: str,
+        message: str,
+        detail: str | None = None,
+    ) -> None:
+        if not self._activity_callback:
+            return
+        try:
+            await self._activity_callback(agent, action, message, detail)
+        except Exception:
+            # Never let telemetry crash the client.
+            return
 
-        Yields:
-            Event dictionaries with type and content
-        """
-        # Create session with title
-        response = await self.client.post(
-            f"{self.base_url}/session",
-            json={"title": f"Conversator: {agent}"}
-        )
-        response.raise_for_status()
-        session = response.json()
-        session_id = session.get("id") or session.get("session_id")
+    async def engage_subagent(self, agent: str, message: str) -> AsyncIterator[dict[str, Any]]:
+        """Create a new session and send a message to a specific agent."""
+        if not await self.health_check():
+            yield {
+                "type": "error",
+                "content": f"OpenCode not available at {self.base_url}. Make sure it is running with 'opencode serve'.",
+            }
+            return
+
+        try:
+            session_id = await self._create_session(title=f"Conversator: {agent}")
+        except Exception as e:
+            yield {"type": "error", "content": f"Failed to create OpenCode session: {e}"}
+            return
+
         self.active_sessions[agent] = session_id
-
-        # Send message with @agent mention to invoke subagent
-        # OpenCode uses @mention syntax to invoke subagents
-        full_message = f"@{agent} {message}"
-
-        # Use async endpoint and stream via SSE
-        async for event in self._send_message_stream(session_id, full_message):
+        await self._emit_activity(
+            agent,
+            "started",
+            f"Engaging {agent}",
+            message[:200] + "..." if len(message) > 200 else message,
+        )
+        async for event in self._send_and_poll(session_id=session_id, agent=agent, message=message):
             yield event
 
-    async def _send_message_stream(
-        self, session_id: str, message: str
-    ) -> AsyncIterator[dict]:
-        """Send message and stream response via SSE.
-
-        Args:
-            session_id: Session ID
-            message: Message to send
-
-        Yields:
-            Event dictionaries with type and content
-        """
-        # Send message asynchronously
-        response = await self.client.post(
-            f"{self.base_url}/session/{session_id}/prompt_async",
-            json={"parts": [{"type": "text", "text": message}]}
-        )
-        response.raise_for_status()
-
-        # Stream events via SSE
-        async with self.client.stream(
-            "GET",
-            f"{self.base_url}/event"
-        ) as sse_response:
-            async for line in sse_response.aiter_lines():
-                if not line:
-                    continue
-
-                if line.startswith("data:"):
-                    data = line[5:].strip()
-                    if not data:
-                        continue
-                    try:
-                        event = json.loads(data)
-                        # Check if event is for our session
-                        event_session = event.get("sessionId") or event.get("session_id")
-                        if event_session and event_session != session_id:
-                            continue
-
-                        # Transform event to our expected format
-                        event_type = event.get("type", "message")
-
-                        if event_type in ("assistant.message", "message"):
-                            content = event.get("content", "") or event.get("text", "")
-                            yield {"type": "message", "content": content}
-                        elif event_type == "assistant.done":
-                            # Session complete
-                            return
-                        elif event_type == "error":
-                            yield {"type": "error", "content": event.get("message", "Unknown error")}
-                            return
-                        else:
-                            # Pass through other events
-                            yield event
-
-                    except json.JSONDecodeError:
-                        # Non-JSON line, treat as plain message
-                        yield {"type": "message", "content": line}
-
-    async def continue_session(
-        self, agent: str, message: str
-    ) -> AsyncIterator[dict]:
-        """Continue existing session with subagent.
-
-        Args:
-            agent: Name of the subagent
-            message: Follow-up message
-
-        Yields:
-            Event dictionaries with type and content
-        """
+    async def continue_session(self, agent: str, message: str) -> AsyncIterator[dict[str, Any]]:
+        """Continue an existing agent session."""
         session_id = self.active_sessions.get(agent)
         if not session_id:
-            # No existing session, create new one
             async for event in self.engage_subagent(agent, message):
                 yield event
             return
 
-        # Continue with same session - no need for @mention
-        async for event in self._send_message_stream(session_id, message):
+        await self._emit_activity(
+            agent,
+            "started",
+            f"Continuing {agent}",
+            message[:200] + "..." if len(message) > 200 else message,
+        )
+
+        async for event in self._send_and_poll(session_id=session_id, agent=agent, message=message):
             yield event
 
-    async def get_status(self) -> dict:
-        """Read status from cache file (instant, no LLM call).
+    async def _create_session(self, title: str) -> str:
+        response = await self.client.post(f"{self.base_url}/session", json={"title": title})
+        response.raise_for_status()
+        session = response.json()
+        session_id = session.get("id") or session.get("session_id")
+        if not session_id:
+            raise RuntimeError("OpenCode session creation returned no id")
+        return session_id
 
-        Returns:
-            Status dictionary with agents and tasks
-        """
+    async def _list_messages(self, session_id: str) -> list[dict[str, Any]]:
+        response = await self.client.get(f"{self.base_url}/session/{session_id}/message")
+        response.raise_for_status()
+        return response.json()
+
+    async def _send_and_poll(
+        self, session_id: str, agent: str, message: str
+    ) -> AsyncIterator[dict[str, Any]]:
+        # Baseline assistant messages so we don't accidentally pick up an older response
+        baseline_assistant_ids: set[str] = set()
+        try:
+            for msg in await self._list_messages(session_id):
+                info = msg.get("info", msg)
+                if info.get("role") == "assistant":
+                    msg_id = info.get("id") or info.get("messageID")
+                    if msg_id:
+                        baseline_assistant_ids.add(msg_id)
+        except Exception:
+            baseline_assistant_ids = set()
+
+        # Send the message asynchronously
+        response = await self.client.post(
+            f"{self.base_url}/session/{session_id}/prompt_async",
+            json={"agent": agent, "parts": [{"type": "text", "text": message}]},
+        )
+        response.raise_for_status()
+        await self._emit_activity(
+            agent, "request_sent", f"Request sent to {agent}", f"Session: {session_id[:8]}..."
+        )
+
+        # Poll for a new assistant message
+        start_time = time.time()
+        timeout_s = 120.0
+        poll_interval = 0.5
+        active_message_id: str | None = None
+        last_content_length = 0
+        stable_polls = 0  # Fallback completion when status is missing
+
+        while time.time() - start_time < timeout_s:
+            try:
+                messages = await self._list_messages(session_id)
+            except Exception as e:
+                yield {"type": "error", "content": f"Failed to poll OpenCode messages: {e}"}
+                return
+
+            # First, fail fast on OpenCode errors surfaced on messages
+            for msg in messages:
+                info = msg.get("info", msg)
+                error = info.get("error")
+                if error:
+                    error_data = error.get("data", {}) if isinstance(error, dict) else {}
+                    error_msg = error_data.get("message") or str(error)
+                    yield {"type": "error", "content": f"OpenCode error: {error_msg}"}
+                    return
+
+            # Find candidate assistant messages not in baseline
+            candidates: list[tuple[str | None, dict[str, Any], dict[str, Any]]] = []
+            for msg in messages:
+                info = msg.get("info", msg)
+                if info.get("role") != "assistant":
+                    continue
+
+                msg_id = info.get("id") or info.get("messageID")
+                if msg_id and msg_id in baseline_assistant_ids:
+                    continue
+
+                candidates.append((msg_id, msg, info))
+
+            if not candidates:
+                await asyncio.sleep(poll_interval)
+                poll_interval = min(poll_interval * 1.2, 2.0)
+                continue
+
+            # Stick to the first new assistant message we see for this request
+            if active_message_id:
+                chosen = next((c for c in candidates if c[0] == active_message_id), None)
+            else:
+                chosen = None
+
+            if not chosen:
+                chosen = candidates[-1]
+                active_message_id = chosen[0]
+                last_content_length = 0
+                stable_polls = 0
+
+            _, chosen_msg, chosen_info = chosen
+
+            parts = chosen_msg.get("parts", [])
+            content = ""
+            for part in parts:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    content += part.get("text", "")
+
+            msg_status = chosen_info.get("status", "")
+            is_complete = (
+                msg_status in ("done", "complete", "finished", "success")
+                or chosen_info.get("complete") is True
+                or chosen_info.get("finished") is True
+                or chosen_info.get("finish") is not None
+            )
+
+            if content and len(content) > last_content_length:
+                last_content_length = len(content)
+                stable_polls = 0
+            elif content and len(content) == last_content_length:
+                stable_polls += 1
+
+            # Some server builds don't expose message status consistently. As a fallback,
+            # if the assistant content stops changing for a while *and* the server isn't
+            # providing any completion signal, treat it as complete.
+            if content and not is_complete and not msg_status and stable_polls >= 12:
+                is_complete = True
+
+            if is_complete:
+                duration_ms = (time.time() - start_time) * 1000
+                await self._emit_activity(
+                    agent,
+                    "completed",
+                    f"{agent} finished ({duration_ms / 1000:.1f}s)",
+                    content[:500] + "..." if len(content) > 500 else content,
+                )
+                yield {"type": "message", "content": content}
+                yield {"type": "complete", "content": content, "duration_ms": duration_ms}
+                return
+
+            await asyncio.sleep(poll_interval)
+            poll_interval = min(poll_interval * 1.2, 2.0)
+
+        await self._emit_activity(agent, "error", f"{agent} timed out", None)
+        yield {"type": "error", "content": f"Timeout waiting for {agent} response"}
+
+    async def get_status(self) -> dict[str, Any]:
+        """Read status from cache file (instant, no LLM call)."""
         status_file = Path(".conversator/cache/agent-status.json")
         try:
             async with aiofiles.open(status_file) as f:
@@ -179,21 +271,17 @@ class OpenCodeClient:
         except json.JSONDecodeError:
             return {"agents": {}, "tasks": [], "message": "Status file corrupted"}
 
-    async def update_status(self, agent: str, status: dict) -> None:
-        """Update agent status in cache file.
-
-        Args:
-            agent: Agent name
-            status: Status dictionary to merge
-        """
+    async def update_status(self, agent: str, status: dict[str, Any]) -> None:
+        """Update agent status in cache file."""
         from datetime import datetime
 
         status_file = Path(".conversator/cache/agent-status.json")
         current = await self.get_status()
 
+        current.setdefault("agents", {})
         current["agents"][agent] = {
             **status,
-            "updated_at": datetime.utcnow().isoformat()
+            "updated_at": datetime.utcnow().isoformat(),
         }
         current["updated_at"] = datetime.utcnow().isoformat()
 

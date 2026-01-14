@@ -12,10 +12,7 @@ CONVERSATOR_TOOLS: list[dict[str, Any]] = [
         Call this when user asks what projects exist, wants to see options,
         or when you need to help them choose a project to work on.
         Returns project names that have version control or project markers.""",
-        "parameters": {
-            "type": "object",
-            "properties": {}
-        }
+        "parameters": {"type": "object", "properties": {}},
     },
     {
         "name": "select_project",
@@ -27,11 +24,11 @@ CONVERSATOR_TOOLS: list[dict[str, Any]] = [
             "properties": {
                 "project_name": {
                     "type": "string",
-                    "description": "Name of the project folder to select"
+                    "description": "Name of the project folder to select",
                 }
             },
-            "required": ["project_name"]
-        }
+            "required": ["project_name"],
+        },
     },
     {
         "name": "start_builder",
@@ -39,10 +36,7 @@ CONVERSATOR_TOOLS: list[dict[str, Any]] = [
         Call after selecting a project with select_project. This launches the builder
         so it can execute coding tasks in the selected project. You can combine this
         with select_project in a single turn when user says 'let's work on X'.""",
-        "parameters": {
-            "type": "object",
-            "properties": {}
-        }
+        "parameters": {"type": "object", "properties": {}},
     },
     {
         "name": "create_project",
@@ -55,19 +49,19 @@ CONVERSATOR_TOOLS: list[dict[str, Any]] = [
             "properties": {
                 "project_name": {
                     "type": "string",
-                    "description": "Name for the new project folder (use lowercase with dashes, e.g., 'my-new-app')"
+                    "description": "Name for the new project folder (use lowercase with dashes, e.g., 'my-new-app')",
                 },
                 "init_git": {
                     "type": "boolean",
-                    "description": "Initialize git repository in the new project. Default: true"
+                    "description": "Initialize git repository in the new project. Default: true",
                 },
                 "start_builder_after": {
                     "type": "boolean",
-                    "description": "Automatically select and start the builder in the new project. Default: true"
-                }
+                    "description": "Automatically select and start the builder in the new project. Default: true",
+                },
             },
-            "required": ["project_name"]
-        }
+            "required": ["project_name"],
+        },
     },
     # === Planning and Context Tools ===
     {
@@ -81,20 +75,37 @@ CONVERSATOR_TOOLS: list[dict[str, Any]] = [
             "properties": {
                 "task_description": {
                     "type": "string",
-                    "description": "What the user wants to accomplish, in your words"
+                    "description": "What the user wants to accomplish, in your words",
                 },
                 "context": {
                     "type": "string",
-                    "description": "Relevant context from the conversation so far"
+                    "description": "Relevant context from the conversation so far",
                 },
                 "urgency": {
                     "type": "string",
                     "enum": ["low", "normal", "high"],
-                    "description": "How urgent this task is"
+                    "description": "How urgent this task is",
+                },
+            },
+            "required": ["task_description"],
+        },
+    },
+    {
+        "name": "continue_planner",
+        "description": """Continue an active planner session after the user answers
+        the planner's clarifying question(s). Use ONLY after engage_planner returns
+        status='needs_input'. Do not call engage_planner again for the same task -
+        that would restart the planner and can cause looping questions.""",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "user_response": {
+                    "type": "string",
+                    "description": "The user's answer to the planner's question(s)",
                 }
             },
-            "required": ["task_description"]
-        }
+            "required": ["user_response"],
+        },
     },
     {
         "name": "lookup_context",
@@ -104,18 +115,15 @@ CONVERSATOR_TOOLS: list[dict[str, Any]] = [
         "parameters": {
             "type": "object",
             "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "What to look up - be specific"
-                },
+                "query": {"type": "string", "description": "What to look up - be specific"},
                 "scope": {
                     "type": "string",
                     "enum": ["memory", "codebase", "both"],
-                    "description": "Where to search. Default: both"
-                }
+                    "description": "Where to search. Default: both",
+                },
             },
-            "required": ["query"]
-        }
+            "required": ["query"],
+        },
     },
     {
         "name": "check_status",
@@ -127,10 +135,10 @@ CONVERSATOR_TOOLS: list[dict[str, Any]] = [
             "properties": {
                 "verbose": {
                     "type": "boolean",
-                    "description": "Include detailed progress info. Default: false"
+                    "description": "Include detailed progress info. Default: false",
                 }
-            }
-        }
+            },
+        },
     },
     {
         "name": "dispatch_to_builder",
@@ -141,27 +149,24 @@ CONVERSATOR_TOOLS: list[dict[str, Any]] = [
         "parameters": {
             "type": "object",
             "properties": {
-                "plan_file": {
-                    "type": "string",
-                    "description": "Path to the plan file to execute"
-                },
+                "plan_file": {"type": "string", "description": "Path to the plan file to execute"},
                 "agent": {
                     "type": "string",
                     "enum": ["auto", "claude-code", "opencode"],
-                    "description": "Which agent to use. 'auto' uses routing rules based on complexity."
+                    "description": "Which agent to use. 'auto' uses routing rules based on complexity.",
                 },
                 "mode": {
                     "type": "string",
                     "enum": ["plan", "build"],
-                    "description": "For claude-code: 'plan' uses Opus for deep planning, 'build' uses Sonnet for implementation"
+                    "description": "For claude-code: 'plan' uses Opus for deep planning, 'build' uses Sonnet for implementation",
                 },
                 "parallel_with": {
                     "type": "string",
-                    "description": "Task ID to run in parallel with (agents manage their own worktrees)"
-                }
+                    "description": "Task ID to run in parallel with (agents manage their own worktrees)",
+                },
             },
-            "required": ["plan_file"]
-        }
+            "required": ["plan_file"],
+        },
     },
     {
         "name": "add_to_memory",
@@ -173,21 +178,21 @@ CONVERSATOR_TOOLS: list[dict[str, Any]] = [
             "properties": {
                 "content": {
                     "type": "string",
-                    "description": "What to remember - be specific and include context"
+                    "description": "What to remember - be specific and include context",
                 },
                 "keywords": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Keywords for later retrieval"
+                    "description": "Keywords for later retrieval",
                 },
                 "importance": {
                     "type": "string",
                     "enum": ["low", "normal", "high"],
-                    "description": "How important this memory is"
-                }
+                    "description": "How important this memory is",
+                },
             },
-            "required": ["content"]
-        }
+            "required": ["content"],
+        },
     },
     {
         "name": "cancel_task",
@@ -196,17 +201,11 @@ CONVERSATOR_TOOLS: list[dict[str, Any]] = [
         "parameters": {
             "type": "object",
             "properties": {
-                "task_id": {
-                    "type": "string",
-                    "description": "ID of the task to cancel"
-                },
-                "reason": {
-                    "type": "string",
-                    "description": "Why the task is being canceled"
-                }
+                "task_id": {"type": "string", "description": "ID of the task to cancel"},
+                "reason": {"type": "string", "description": "Why the task is being canceled"},
             },
-            "required": ["task_id"]
-        }
+            "required": ["task_id"],
+        },
     },
     {
         "name": "check_inbox",
@@ -218,10 +217,10 @@ CONVERSATOR_TOOLS: list[dict[str, Any]] = [
             "properties": {
                 "include_read": {
                     "type": "boolean",
-                    "description": "Include already-read notifications. Default: false"
+                    "description": "Include already-read notifications. Default: false",
                 }
-            }
-        }
+            },
+        },
     },
     {
         "name": "acknowledge_inbox",
@@ -233,10 +232,10 @@ CONVERSATOR_TOOLS: list[dict[str, Any]] = [
                 "inbox_ids": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Specific notification IDs to acknowledge. If empty, acknowledges all."
+                    "description": "Specific notification IDs to acknowledge. If empty, acknowledges all.",
                 }
-            }
-        }
+            },
+        },
     },
     {
         "name": "update_working_prompt",
@@ -246,31 +245,28 @@ CONVERSATOR_TOOLS: list[dict[str, Any]] = [
         "parameters": {
             "type": "object",
             "properties": {
-                "title": {
-                    "type": "string",
-                    "description": "Task title (short, descriptive)"
-                },
+                "title": {"type": "string", "description": "Task title (short, descriptive)"},
                 "intent": {
                     "type": "string",
-                    "description": "What the user wants to achieve - the goal"
+                    "description": "What the user wants to achieve - the goal",
                 },
                 "requirements": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Specific requirements gathered from conversation"
+                    "description": "Specific requirements gathered from conversation",
                 },
                 "constraints": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Constraints or things to avoid"
+                    "description": "Constraints or things to avoid",
                 },
                 "context": {
                     "type": "string",
-                    "description": "Additional context relevant to the task"
-                }
+                    "description": "Additional context relevant to the task",
+                },
             },
-            "required": ["title", "intent"]
-        }
+            "required": ["title", "intent"],
+        },
     },
     {
         "name": "freeze_prompt",
@@ -282,10 +278,10 @@ CONVERSATOR_TOOLS: list[dict[str, Any]] = [
             "properties": {
                 "confirm_summary": {
                     "type": "string",
-                    "description": "Brief summary to confirm with user before freezing"
+                    "description": "Brief summary to confirm with user before freezing",
                 }
-            }
-        }
+            },
+        },
     },
     {
         "name": "quick_dispatch",
@@ -302,19 +298,19 @@ CONVERSATOR_TOOLS: list[dict[str, Any]] = [
                 "operation": {
                     "type": "string",
                     "enum": ["query", "simple_mutation"],
-                    "description": "Type: 'query' for read-only (ls, git status), 'simple_mutation' for safe writes (mkdir, touch)"
+                    "description": "Type: 'query' for read-only (ls, git status), 'simple_mutation' for safe writes (mkdir, touch)",
                 },
                 "command": {
                     "type": "string",
-                    "description": "The command to execute (e.g., 'mkdir my-project', 'git status', 'ls -la')"
+                    "description": "The command to execute (e.g., 'mkdir my-project', 'git status', 'ls -la')",
                 },
                 "working_dir": {
                     "type": "string",
-                    "description": "Optional working directory (default: project root)"
-                }
+                    "description": "Optional working directory (default: project root)",
+                },
             },
-            "required": ["operation", "command"]
-        }
+            "required": ["operation", "command"],
+        },
     },
     {
         "name": "engage_brainstormer",
@@ -326,22 +322,16 @@ CONVERSATOR_TOOLS: list[dict[str, Any]] = [
         "parameters": {
             "type": "object",
             "properties": {
-                "topic": {
-                    "type": "string",
-                    "description": "What to brainstorm or discuss"
-                },
-                "context": {
-                    "type": "string",
-                    "description": "Relevant context for the discussion"
-                },
+                "topic": {"type": "string", "description": "What to brainstorm or discuss"},
+                "context": {"type": "string", "description": "Relevant context for the discussion"},
                 "constraints": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Any constraints to keep in mind"
-                }
+                    "description": "Any constraints to keep in mind",
+                },
             },
-            "required": ["topic"]
-        }
+            "required": ["topic"],
+        },
     },
     {
         "name": "get_builder_plan",
@@ -350,14 +340,9 @@ CONVERSATOR_TOOLS: list[dict[str, Any]] = [
         proposes before implementation begins.""",
         "parameters": {
             "type": "object",
-            "properties": {
-                "task_id": {
-                    "type": "string",
-                    "description": "Task ID to get plan for"
-                }
-            },
-            "required": ["task_id"]
-        }
+            "properties": {"task_id": {"type": "string", "description": "Task ID to get plan for"}},
+            "required": ["task_id"],
+        },
     },
     {
         "name": "approve_builder_plan",
@@ -367,18 +352,15 @@ CONVERSATOR_TOOLS: list[dict[str, Any]] = [
         "parameters": {
             "type": "object",
             "properties": {
-                "task_id": {
-                    "type": "string",
-                    "description": "Task ID to approve"
-                },
+                "task_id": {"type": "string", "description": "Task ID to approve"},
                 "modifications": {
                     "type": "string",
-                    "description": "Optional modifications to the plan before building"
-                }
+                    "description": "Optional modifications to the plan before building",
+                },
             },
-            "required": ["task_id"]
-        }
-    }
+            "required": ["task_id"],
+        },
+    },
 ]
 
 

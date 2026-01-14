@@ -20,7 +20,7 @@ async def run_conversator(
     opencode_url: str | None = None,
     config_path: str = ".conversator/config.yaml",
     dashboard_port: int = 8080,
-    **source_kwargs
+    **source_kwargs,
 ) -> None:
     """Run the Conversator voice interface.
 
@@ -39,6 +39,7 @@ async def run_conversator(
     # Find config file and determine project root BEFORE loading config
     # Config is at .conversator/config.yaml, so project root is parent of .conversator
     from pathlib import Path
+
     config_file = Path(config_path)
     if config_file.is_absolute() and config_file.exists():
         conversator_project_root = config_file.parent.parent
@@ -107,7 +108,9 @@ async def run_conversator(
         else:
             # FAIL FAST - subagents are critical for the voice conversation
             print("\nERROR: Failed to start OpenCode orchestration layer!")
-            print("The subagents (planner, context-reader, etc.) are REQUIRED for Conversator to function.")
+            print(
+                "The subagents (planner, context-reader, etc.) are REQUIRED for Conversator to function."
+            )
             print("\nPossible solutions:")
             print("  1. Check if port 4096 is already in use: lsof -i :4096")
             print("  2. Check OpenCode installation: which opencode")
@@ -140,7 +143,7 @@ async def run_conversator(
         music_path=str(ambient_audio_path) if ambient_audio_path else None,
         volume=0.15,
         ducked_volume=0.03,
-        fade_duration=2.0
+        fade_duration=2.0,
     )
 
     # Connect ambient audio to voice source for ducking coordination
@@ -157,7 +160,7 @@ async def run_conversator(
 
         # Connect ambient audio to voice source for ducking
         # The LocalVoiceSource has _is_playing flag that ambient audio can check
-        if hasattr(voice, '_is_playing'):
+        if hasattr(voice, "_is_playing"):
             ambient_audio.set_voice_source(voice)
             print("Ambient audio ducking enabled")
 
@@ -167,7 +170,7 @@ async def run_conversator(
 
         # Connect voice source to conversator for interrupt handling
         # This allows stopping playback immediately when user interrupts
-        if hasattr(voice, 'stop_playback'):
+        if hasattr(voice, "stop_playback"):
             session.conversator.set_voice_source(voice)
             print("Voice interrupt handling enabled")
 
@@ -175,9 +178,7 @@ async def run_conversator(
 
         # Create background monitor for task completion
         monitor = BuilderMonitor(
-            state=session.state,
-            builders=session.tool_handler.builders,
-            interval=5.0
+            state=session.state, builders=session.tool_handler.builders, interval=5.0
         )
 
         # Completion handler for voice notification
@@ -203,14 +204,13 @@ async def run_conversator(
         # This enables real-time activity feed updates in the dashboard
         ws_manager = dashboard_app.state.ws_manager
 
-        async def activity_callback(agent: str, action: str, message: str, detail: str | None) -> None:
+        async def activity_callback(
+            agent: str, action: str, message: str, detail: str | None
+        ) -> None:
             """Broadcast activity events to dashboard."""
             # Broadcast to dashboard WebSocket clients
             await ws_manager.broadcast_activity(
-                agent=agent,
-                action=action,
-                message=message,
-                detail=detail
+                agent=agent, action=action, message=message, detail=detail
             )
             # Note: Voice feedback is now handled via ToolResponse.voice_feedback
             # and ambient audio via ToolResponse.start_ambient/stop_ambient
@@ -246,23 +246,58 @@ async def run_conversator(
 
         # Start dashboard server
         import uvicorn
+
         dashboard_config = uvicorn.Config(
-            dashboard_app,
-            host="0.0.0.0",
-            port=dashboard_port,
-            log_level="warning"
+            dashboard_app, host="0.0.0.0", port=dashboard_port, log_level="warning"
         )
         dashboard_server = uvicorn.Server(dashboard_config)
 
         try:
-            # Run all loops concurrently
-            await asyncio.gather(
-                _audio_send_loop(voice, session, config),
-                _response_process_loop(voice, session),
-                monitor.start(on_completion=on_task_complete),
-                dashboard_server.serve(),
-                return_exceptions=True
-            )
+            # Run all loops concurrently.
+            # IMPORTANT: fail fast if any critical loop crashes; otherwise audio
+            # forwarding can silently stop and Gemini will never detect speech.
+            import traceback
+
+            # Start the monitor loop and treat its internal task as a critical loop.
+            await monitor.start(on_completion=on_task_complete)
+            monitor_task = monitor._task
+            if monitor_task is not None:
+                monitor_task.set_name("builder_monitor")
+
+            tasks = [
+                asyncio.create_task(
+                    _audio_send_loop(voice, session, config),
+                    name="audio_send_loop",
+                ),
+                asyncio.create_task(
+                    _response_process_loop(voice, session),
+                    name="response_process_loop",
+                ),
+                asyncio.create_task(
+                    dashboard_server.serve(),
+                    name="dashboard_server",
+                ),
+            ]
+            if monitor_task is not None:
+                tasks.append(monitor_task)
+
+            done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+
+            # Any loop exiting is unexpected; treat it as fatal.
+            for t in done:
+                exc = t.exception()
+                if exc is None:
+                    exc = RuntimeError(f"Task '{t.get_name()}' exited unexpectedly")
+                print(f"[FATAL] {t.get_name()} crashed: {exc}")
+                traceback.print_exception(exc)
+
+            for t in pending:
+                t.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+
+            # Re-raise the first exception to stop the app.
+            first_exc = next((t.exception() for t in done if t.exception() is not None), None)
+            raise first_exc or RuntimeError("Conversator stopped unexpectedly")
         finally:
             await monitor.stop()
 
@@ -295,7 +330,7 @@ async def _cleanup_port(port: int) -> None:
         )
         if result.returncode == 0 and result.stdout:
             # Extract PID from output like: users:(("python",pid=12345,fd=15))
-            match = re.search(r'pid=(\d+)', result.stdout)
+            match = re.search(r"pid=(\d+)", result.stdout)
             if match:
                 pid = int(match.group(1))
                 print(f"Found process (PID {pid}) on port {port}, terminating...")
@@ -329,6 +364,7 @@ async def _audio_send_loop(voice, session: ConversatorSession, config: Conversat
         config: Conversator configuration
     """
     import numpy as np
+
     chunk_count = 0
     last_speech_chunk = 0  # Track when we last detected speech
     consecutive_errors = 0
@@ -348,9 +384,11 @@ async def _audio_send_loop(voice, session: ConversatorSession, config: Conversat
                     # Check audio level (threshold from config)
                     # Use higher threshold when model is generating to reduce false positives from echo
                     audio_array = np.frombuffer(chunk, dtype=np.int16)
-                    rms = np.sqrt(np.mean(audio_array.astype(np.float32)**2))
+                    rms = np.sqrt(np.mean(audio_array.astype(np.float32) ** 2))
                     is_generating = session.conversator._is_generating
-                    effective_threshold = speech_threshold * 3 if is_generating else speech_threshold
+                    effective_threshold = (
+                        speech_threshold * 3 if is_generating else speech_threshold
+                    )
                     is_speech = rms > effective_threshold
 
                     await session.conversator.send_audio(chunk)
@@ -368,7 +406,9 @@ async def _audio_send_loop(voice, session: ConversatorSession, config: Conversat
                                 try:
                                     await session.conversator.send_audio_end()
                                     audio_end_sent = True
-                                    print(f"[Audio] Sent audio_end signal after {SILENCE_CHUNKS_THRESHOLD} silent chunks")
+                                    print(
+                                        f"[Audio] Sent audio_end signal after {SILENCE_CHUNKS_THRESHOLD} silent chunks"
+                                    )
                                 except Exception as e:
                                     print(f"[Audio] Failed to send audio_end: {e}")
 
@@ -377,20 +417,28 @@ async def _audio_send_loop(voice, session: ConversatorSession, config: Conversat
                     log_interval = 25 if is_speech else 50
                     if chunk_count <= 5 or chunk_count % log_interval == 0:
                         level = "SPEECH" if is_speech else "silence"
-                        chunks_since_speech = chunk_count - last_speech_chunk if last_speech_chunk > 0 else "never"
+                        chunks_since_speech = (
+                            chunk_count - last_speech_chunk if last_speech_chunk > 0 else "never"
+                        )
                         gen_state = "GEN" if session.conversator._is_generating else "idle"
-                        print(f"[Audio #{chunk_count}: {level} (rms={rms:.0f}), last speech: {chunks_since_speech}, state: {gen_state}]")
+                        print(
+                            f"[Audio #{chunk_count}: {level} (rms={rms:.0f}), last speech: {chunks_since_speech}, state: {gen_state}]"
+                        )
             except Exception as e:
                 consecutive_errors += 1
                 print(f"Error sending audio chunk #{chunk_count}: {e}")
                 if consecutive_errors >= 5:
-                    print(f"[Audio loop] Too many consecutive errors ({consecutive_errors}), breaking")
+                    print(
+                        f"[Audio loop] Too many consecutive errors ({consecutive_errors}), breaking"
+                    )
                     import traceback
+
                     traceback.print_exc()
                     break
     except Exception as e:
         print(f"[Audio loop] Fatal error in audio send loop: {e}")
         import traceback
+
         traceback.print_exc()
     finally:
         print(f"[Audio loop] Ended after {chunk_count} chunks")
@@ -429,7 +477,7 @@ async def _response_process_loop(voice, session: ConversatorSession) -> None:
             # Wait for playback to complete before starting next turn
             # This prevents the microphone from picking up still-playing audio
             # and causing false interrupts that create a feedback loop
-            if hasattr(voice, 'wait_for_playback_complete'):
+            if hasattr(voice, "wait_for_playback_complete"):
                 print("[Waiting for playback to complete...]")
                 completed = await voice.wait_for_playback_complete(timeout=10.0)
                 if not completed:
@@ -457,6 +505,7 @@ async def _response_process_loop(voice, session: ConversatorSession) -> None:
         except Exception as e:
             print(f"Response processing error on turn #{turn_count}: {e}")
             import traceback
+
             traceback.print_exc()
             break
 
@@ -485,50 +534,42 @@ Environment variables:
 Dashboard:
   A web dashboard is available at http://localhost:8080 (configurable with --dashboard-port).
   It shows real-time conversation logs, task status, builder health, and notifications.
-"""
+""",
     )
 
     parser.add_argument(
         "--source",
         choices=["local", "discord", "telegram"],
         default="local",
-        help="Voice input source (default: local)"
+        help="Voice input source (default: local)",
     )
 
     parser.add_argument(
         "--opencode-url",
         default=None,
-        help="OpenCode server URL (default: uses conversator.port from config.yaml)"
+        help="OpenCode server URL (default: uses conversator.port from config.yaml)",
     )
 
     parser.add_argument(
         "--config",
         default=".conversator/config.yaml",
-        help="Path to config file (default: .conversator/config.yaml)"
+        help="Path to config file (default: .conversator/config.yaml)",
     )
 
     parser.add_argument(
-        "--dashboard-port",
-        type=int,
-        default=8080,
-        help="Dashboard server port (default: 8080)"
+        "--dashboard-port", type=int, default=8080, help="Dashboard server port (default: 8080)"
     )
 
     parser.add_argument(
-        "--discord-token",
-        help="Discord bot token (or set DISCORD_BOT_TOKEN env var)"
+        "--discord-token", help="Discord bot token (or set DISCORD_BOT_TOKEN env var)"
     )
 
     parser.add_argument(
-        "--telegram-token",
-        help="Telegram bot token (or set TELEGRAM_BOT_TOKEN env var)"
+        "--telegram-token", help="Telegram bot token (or set TELEGRAM_BOT_TOKEN env var)"
     )
 
     parser.add_argument(
-        "--telegram-users",
-        type=int,
-        nargs="*",
-        help="Telegram user IDs allowed to use the bot"
+        "--telegram-users", type=int, nargs="*", help="Telegram user IDs allowed to use the bot"
     )
 
     args = parser.parse_args()
@@ -553,13 +594,15 @@ Dashboard:
             source_kwargs["allowed_users"] = args.telegram_users
 
     # Run the main loop
-    asyncio.run(run_conversator(
-        source_type=args.source,
-        opencode_url=args.opencode_url,
-        config_path=args.config,
-        dashboard_port=args.dashboard_port,
-        **source_kwargs
-    ))
+    asyncio.run(
+        run_conversator(
+            source_type=args.source,
+            opencode_url=args.opencode_url,
+            config_path=args.config,
+            dashboard_port=args.dashboard_port,
+            **source_kwargs,
+        )
+    )
 
 
 if __name__ == "__main__":

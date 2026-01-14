@@ -28,9 +28,7 @@ class ConversatorVoice:
     """
 
     def __init__(
-        self,
-        api_key: str,
-        system_prompt_path: str = ".conversator/prompts/conversator.md"
+        self, api_key: str, system_prompt_path: str = ".conversator/prompts/conversator.md"
     ):
         """Initialize Conversator voice agent.
 
@@ -57,7 +55,9 @@ class ConversatorVoice:
         self._announcement_task: asyncio.Task | None = None
 
         # Session resumption and reconnection state
-        self._session_handle: str | None = None  # Handle from SessionResumptionUpdate for reconnection
+        self._session_handle: str | None = (
+            None  # Handle from SessionResumptionUpdate for reconnection
+        )
         self._reconnect_attempts: int = 0
         self._max_reconnect_attempts: int = 3
         self._reconnect_delay: float = 1.0  # Base delay in seconds
@@ -67,6 +67,7 @@ class ConversatorVoice:
 
         # Generation state tracking (for audio coordination)
         self._is_generating: bool = False
+        self._in_tool_call: bool = False
         self._last_response_time: float = 0
 
     def _load_system_prompt(self, path: str) -> str:
@@ -128,7 +129,9 @@ Be concise - this is voice, not text."""
                         turns=[
                             types.Content(
                                 role="user",
-                                parts=[types.Part(text=f"[SYSTEM: Announce this to the user: {text}]")]
+                                parts=[
+                                    types.Part(text=f"[SYSTEM: Announce this to the user: {text}]")
+                                ],
                             )
                         ]
                     )
@@ -146,10 +149,7 @@ Be concise - this is voice, not text."""
         """
         while True:
             try:
-                announcement = await asyncio.wait_for(
-                    self._announcement_queue.get(),
-                    timeout=0.5
-                )
+                announcement = await asyncio.wait_for(self._announcement_queue.get(), timeout=0.5)
                 print(f"[GeminiLive] Processing queued announcement: {announcement[:100]}...")
                 if self._connected and self.session:
                     # Send announcement as a system message that Gemini should speak
@@ -158,7 +158,11 @@ Be concise - this is voice, not text."""
                             turns=[
                                 types.Content(
                                     role="user",
-                                    parts=[types.Part(text=f"[SYSTEM: Announce this to the user: {announcement}]")]
+                                    parts=[
+                                        types.Part(
+                                            text=f"[SYSTEM: Announce this to the user: {announcement}]"
+                                        )
+                                    ],
                                 )
                             ]
                         )
@@ -177,7 +181,7 @@ Be concise - this is voice, not text."""
         self,
         tools: list[dict[str, Any]],
         tool_handler: ToolHandler,
-        resume_handle: str | None = None
+        resume_handle: str | None = None,
     ) -> None:
         """Connect to Gemini Live with tools.
 
@@ -197,14 +201,14 @@ Be concise - this is voice, not text."""
         tool_config = [{"function_declarations": tools}]
 
         tool_names = [t["name"] for t in tools]
-        print(f"[DEBUG] Registering {len(tools)} tools with Live API: {', '.join(tool_names[:5])}{'...' if len(tools) > 5 else ''}")
+        print(
+            f"[DEBUG] Registering {len(tools)} tools with Live API: {', '.join(tool_names[:5])}{'...' if len(tools) > 5 else ''}"
+        )
 
         # Build session resumption config if we have a handle
         session_resumption_config = None
         if resume_handle:
-            session_resumption_config = types.SessionResumptionConfig(
-                handle=resume_handle
-            )
+            session_resumption_config = types.SessionResumptionConfig(handle=resume_handle)
             print(f"[GeminiLive] Resuming session with handle")
         else:
             # Request session resumption updates for future reconnection
@@ -214,9 +218,9 @@ Be concise - this is voice, not text."""
         # Build config with tools, voice activity detection, and session resumption
         config = types.LiveConnectConfig(
             response_modalities=["AUDIO"],
-            system_instruction=types.Content(
-                parts=[types.Part(text=self.system_prompt)]
-            ),
+            system_instruction=types.Content(parts=[types.Part(text=self.system_prompt)]),
+            # Enable input transcription for debugging + UX.
+            input_audio_transcription=types.AudioTranscriptionConfig(),
             # Tools must be raw dicts for Live API
             tools=tool_config,
             # Speech config for output
@@ -246,8 +250,7 @@ Be concise - this is voice, not text."""
 
         # Connect using async context manager
         self._session_context = self.client.aio.live.connect(
-            model="gemini-2.0-flash-exp",
-            config=config
+            model="gemini-2.0-flash-exp", config=config
         )
         self.session = await self._session_context.__aenter__()
         self._connected = True
@@ -299,12 +302,13 @@ Be concise - this is voice, not text."""
 
         self._reconnect_attempts += 1
         delay = min(
-            self._reconnect_delay * (2 ** (self._reconnect_attempts - 1)),
-            self._max_reconnect_delay
+            self._reconnect_delay * (2 ** (self._reconnect_attempts - 1)), self._max_reconnect_delay
         )
 
-        print(f"[Reconnect] Attempt {self._reconnect_attempts}/{self._max_reconnect_attempts} "
-              f"in {delay:.1f}s (handle={'yes' if self._session_handle else 'no'})")
+        print(
+            f"[Reconnect] Attempt {self._reconnect_attempts}/{self._max_reconnect_attempts} "
+            f"in {delay:.1f}s (handle={'yes' if self._session_handle else 'no'})"
+        )
 
         await asyncio.sleep(delay)
 
@@ -335,7 +339,7 @@ Be concise - this is voice, not text."""
             await self.connect(
                 tools=self._last_tools,
                 tool_handler=self.tool_handler,
-                resume_handle=self._session_handle
+                resume_handle=self._session_handle,
             )
 
             print(f"[Reconnect] Success! Session resumed")
@@ -344,6 +348,7 @@ Be concise - this is voice, not text."""
         except Exception as e:
             print(f"[Reconnect] Failed: {e}")
             import traceback
+
             traceback.print_exc()
             return False
 
@@ -351,8 +356,7 @@ Be concise - this is voice, not text."""
     def can_reconnect(self) -> bool:
         """Check if reconnection is possible."""
         return (
-            self._reconnect_attempts < self._max_reconnect_attempts
-            and self._last_tools is not None
+            self._reconnect_attempts < self._max_reconnect_attempts and self._last_tools is not None
         )
 
     @property
@@ -419,19 +423,14 @@ Be concise - this is voice, not text."""
 
         await self.session.send(
             input=types.LiveClientContent(
-                turns=[
-                    types.Content(
-                        role="user",
-                        parts=[types.Part(text=text)]
-                    )
-                ]
+                turns=[types.Content(role="user", parts=[types.Part(text=text)])]
             )
         )
 
     async def process_responses(
         self,
         audio_callback: Callable[[bytes], Any],
-        text_callback: Callable[[str], Any] | None = None
+        text_callback: Callable[[str], Any] | None = None,
     ) -> None:
         """Process responses from Gemini - audio, text, and tool calls.
 
@@ -451,18 +450,18 @@ Be concise - this is voice, not text."""
 
             # Debug: show what type of response we got
             response_types = []
-            if hasattr(response, 'server_content') and response.server_content:
-                response_types.append('server_content')
-            if hasattr(response, 'tool_call') and response.tool_call:
-                response_types.append('tool_call')
-            if hasattr(response, 'setup_complete') and response.setup_complete:
-                response_types.append('setup_complete')
-            if hasattr(response, 'data') and response.data:
-                response_types.append(f'data({len(response.data)})')
-            if hasattr(response, 'go_away') and response.go_away:
-                response_types.append('GO_AWAY')
+            if hasattr(response, "server_content") and response.server_content:
+                response_types.append("server_content")
+            if hasattr(response, "tool_call") and response.tool_call:
+                response_types.append("tool_call")
+            if hasattr(response, "setup_complete") and response.setup_complete:
+                response_types.append("setup_complete")
+            if hasattr(response, "data") and response.data:
+                response_types.append(f"data({len(response.data)})")
+            if hasattr(response, "go_away") and response.go_away:
+                response_types.append("GO_AWAY")
                 self._go_away_received = True
-                time_left = getattr(response.go_away, 'time_left', None)
+                time_left = getattr(response.go_away, "time_left", None)
                 if time_left:
                     print(f"[GO_AWAY: Server ending session, time left: {time_left}]")
                 else:
@@ -470,27 +469,35 @@ Be concise - this is voice, not text."""
                 print(f"[Session handle available: {'yes' if self._session_handle else 'no'}]")
 
             # Capture session resumption updates for reconnection
-            if hasattr(response, 'session_resumption_update') and response.session_resumption_update:
+            if (
+                hasattr(response, "session_resumption_update")
+                and response.session_resumption_update
+            ):
                 update = response.session_resumption_update
-                if hasattr(update, 'new_handle') and update.new_handle:
+                if hasattr(update, "new_handle") and update.new_handle:
                     self._session_handle = update.new_handle
                     print(f"[Session resumption handle updated]")
 
             # Check for turn state flags and always show them
-            if hasattr(response, 'server_content') and response.server_content:
+            if hasattr(response, "server_content") and response.server_content:
                 sc = response.server_content
                 flags = []
-                if hasattr(sc, 'turn_complete') and sc.turn_complete:
-                    flags.append('TURN_COMPLETE')
-                if hasattr(sc, 'generation_complete') and sc.generation_complete:
-                    flags.append('GEN_COMPLETE')
-                if hasattr(sc, 'interrupted') and sc.interrupted:
-                    flags.append('INTERRUPTED')
-                if hasattr(sc, 'input_transcription') and sc.input_transcription:
-                    print(f"[Transcription: {sc.input_transcription}]")
-                    # Log to conversation logger for dashboard
-                    if self.conversation_logger:
-                        await self.conversation_logger.log_user_speech(sc.input_transcription)
+                if hasattr(sc, "turn_complete") and sc.turn_complete:
+                    flags.append("TURN_COMPLETE")
+                if hasattr(sc, "generation_complete") and sc.generation_complete:
+                    flags.append("GEN_COMPLETE")
+                if hasattr(sc, "interrupted") and sc.interrupted:
+                    flags.append("INTERRUPTED")
+                if hasattr(sc, "input_transcription") and sc.input_transcription:
+                    transcript = sc.input_transcription
+                    transcript_text = getattr(transcript, "text", None)
+                    transcript_finished = getattr(transcript, "finished", None)
+                    if transcript_text:
+                        suffix = " (final)" if transcript_finished else ""
+                        print(f"[Transcription{suffix}: {transcript_text}]")
+                        # Log to conversation logger for dashboard
+                        if self.conversation_logger:
+                            await self.conversation_logger.log_user_speech(transcript_text)
                 if flags:
                     print(f"[Response #{response_count}: {flags}]")
 
@@ -499,20 +506,18 @@ Be concise - this is voice, not text."""
                     print(f"[Response #{response_count}: {response_types}]")
                 else:
                     # Show actual attributes if we don't recognize the response
-                    attrs = [a for a in dir(response) if not a.startswith('_')]
+                    attrs = [a for a in dir(response) if not a.startswith("_")]
                     print(f"[Response #{response_count}: attrs={attrs[:10]}]")
 
             # Handle server content (audio/text responses)
-            if hasattr(response, 'server_content') and response.server_content:
+            if hasattr(response, "server_content") and response.server_content:
                 await self._handle_server_content(
-                    response.server_content,
-                    audio_callback,
-                    text_callback
+                    response.server_content, audio_callback, text_callback
                 )
 
             # Handle tool calls
             handled_tool_call_this_response = False
-            if hasattr(response, 'tool_call') and response.tool_call:
+            if hasattr(response, "tool_call") and response.tool_call:
                 await self._handle_tool_calls(response.tool_call)
                 handled_tool_call_this_response = True
 
@@ -520,24 +525,30 @@ Be concise - this is voice, not text."""
             # TURN_COMPLETE means Gemini's turn is done and it's waiting for user input
             # BUT: If we just handled a tool call, we need to wait for Gemini's response
             # to the tool result, so don't break on the same response that had the tool_call
-            if hasattr(response, 'server_content') and response.server_content:
+            if hasattr(response, "server_content") and response.server_content:
                 sc = response.server_content
-                if hasattr(sc, 'turn_complete') and sc.turn_complete:
+                if hasattr(sc, "turn_complete") and sc.turn_complete:
                     if handled_tool_call_this_response:
-                        print("[Turn complete on tool_call response - continuing to wait for tool result response]")
+                        print(
+                            "[Turn complete on tool_call response - continuing to wait for tool result response]"
+                        )
                     else:
-                        print(f"[Turn complete after {response_count} responses - ready for next turn]")
+                        print(
+                            f"[Turn complete after {response_count} responses - ready for next turn]"
+                        )
                         return  # Clean exit on TURN_COMPLETE
 
         # Response iterator completed without TURN_COMPLETE - connection closed
         self._connected = False
         if self._go_away_received:
-            print(f"[Session ended after GO_AWAY ({response_count} responses) - reconnection available]")
-            raise ConnectionResetError(
-                f"Session ended by GO_AWAY after {response_count} responses"
+            print(
+                f"[Session ended after GO_AWAY ({response_count} responses) - reconnection available]"
             )
+            raise ConnectionResetError(f"Session ended by GO_AWAY after {response_count} responses")
         else:
-            print(f"[WARNING: Gemini session ended unexpectedly after {response_count} responses without TURN_COMPLETE]")
+            print(
+                f"[WARNING: Gemini session ended unexpectedly after {response_count} responses without TURN_COMPLETE]"
+            )
             print("[WebSocket connection was closed unexpectedly]")
             raise ConnectionResetError(
                 f"Gemini session ended unexpectedly after {response_count} responses"
@@ -547,7 +558,7 @@ Be concise - this is voice, not text."""
         self,
         content,
         audio_callback: Callable[[bytes], Any],
-        text_callback: Callable[[str], Any] | None
+        text_callback: Callable[[str], Any] | None,
     ) -> None:
         """Handle audio and text responses from Gemini.
 
@@ -570,7 +581,7 @@ Be concise - this is voice, not text."""
             # Note: Without hardware AEC, interrupts during playback are unreliable
             # because we can't send audio during playback (would cause echo loops)
             # Interrupts work best in the brief gaps between playback chunks
-            if self._voice_source and hasattr(self._voice_source, 'stop_playback'):
+            if self._voice_source and hasattr(self._voice_source, "stop_playback"):
                 self._voice_source.stop_playback()
 
         # Handle model turn with parts
@@ -592,10 +603,7 @@ Be concise - this is voice, not text."""
                     if self.conversation_logger:
                         await self.conversation_logger.log_assistant_response(part.text)
 
-    async def _handle_tool_calls(
-        self,
-        tool_call: types.LiveServerToolCall
-    ) -> None:
+    async def _handle_tool_calls(self, tool_call: types.LiveServerToolCall) -> None:
         """Handle tool calls from Gemini and send results back.
 
         Uses ToolResponse to cleanly separate result data from side effects
@@ -607,7 +615,10 @@ Be concise - this is voice, not text."""
         if not self.tool_handler:
             return
 
+        self._in_tool_call = True
+
         import time as _time
+
         start_time = _time.time()
         call_names = [c.name for c in tool_call.function_calls]
         print(f"[ToolCall] Received {len(call_names)} tool call(s): {call_names}")
@@ -621,13 +632,28 @@ Be concise - this is voice, not text."""
             response = await self._dispatch_tool_call(call.name, call.args or {})
 
             call_duration = _time.time() - call_start
-            result_summary = str(response.result)[:200] + "..." if len(str(response.result)) > 200 else str(response.result)
+            result_summary = (
+                str(response.result)[:200] + "..."
+                if len(str(response.result)) > 200
+                else str(response.result)
+            )
             print(f"[ToolCall] {call.name} completed in {call_duration:.1f}s: {result_summary}")
 
-            # Handle side effects separately from the result
+            # Handle side effects separately from the result.
+            # IMPORTANT: Do not send additional Gemini "user" turns while handling tool calls.
+            # That can cause Gemini to start new turns and re-issue tool calls before it has
+            # processed our function responses (leading to loops and timing drift).
+            result_payload = dict(response.result or {})
+
             if response.voice_feedback:
-                await self.announce(response.voice_feedback)
-                print(f"[ToolCall] Announced: {response.voice_feedback[:100]}...")
+                # Provide voice guidance as part of the tool result so Gemini can speak it
+                # in its normal post-tool response.
+                if "say" in result_payload and isinstance(result_payload["say"], str):
+                    result_payload["say"] = (
+                        f"{result_payload['say']} {response.voice_feedback}".strip()
+                    )
+                else:
+                    result_payload["say"] = response.voice_feedback
 
             if self.ambient_audio:
                 if response.start_ambient:
@@ -635,36 +661,34 @@ Be concise - this is voice, not text."""
                 elif response.stop_ambient:
                     await self.ambient_audio.stop_work_music()
 
-            # Send clean result to Gemini (no special fields)
             function_responses.append(
                 types.FunctionResponse(
                     id=call.id,
                     name=call.name,
-                    response=response.result
+                    response=result_payload,
                 )
             )
 
         total_duration = _time.time() - start_time
-        print(f"[ToolCall] All tool calls completed in {total_duration:.1f}s, sending {len(function_responses)} response(s) to Gemini")
+        print(
+            f"[ToolCall] All tool calls completed in {total_duration:.1f}s, sending {len(function_responses)} response(s) to Gemini"
+        )
 
         # Send tool responses back to Gemini
         try:
-            await self.session.send(
-                input=types.LiveClientToolResponse(
-                    function_responses=function_responses
-                )
+            await self.session.send_tool_response(
+                function_responses=function_responses,
             )
             print(f"[ToolCall] Tool responses sent successfully - waiting for Gemini's response")
         except Exception as e:
             print(f"[ToolCall] ERROR sending tool responses: {e}")
             import traceback
-            traceback.print_exc()
 
-    async def _dispatch_tool_call(
-        self,
-        name: str,
-        args: dict[str, Any]
-    ) -> ToolResponse:
+            traceback.print_exc()
+        finally:
+            self._in_tool_call = False
+
+    async def _dispatch_tool_call(self, name: str, args: dict[str, Any]) -> ToolResponse:
         """Dispatch a tool call to the appropriate handler.
 
         Args:
@@ -686,6 +710,7 @@ Be concise - this is voice, not text."""
             "create_project": self.tool_handler.handle_create_project,
             # Planning and context
             "engage_planner": self.tool_handler.handle_engage_planner,
+            "continue_planner": self.tool_handler.handle_continue_planner,
             "lookup_context": self.tool_handler.handle_lookup_context,
             "check_status": self.tool_handler.handle_check_status,
             "dispatch_to_builder": self.tool_handler.handle_dispatch_to_builder,
@@ -705,7 +730,18 @@ Be concise - this is voice, not text."""
         handler = handlers.get(name)
         if handler:
             try:
-                response = await handler(**args)
+                raw_response = await handler(**args)
+
+                if isinstance(raw_response, ToolResponse):
+                    response = raw_response
+                elif isinstance(raw_response, dict):
+                    response = ToolResponse(result=raw_response)
+                else:
+                    response = ToolResponse(
+                        result={
+                            "error": f"Tool '{name}' returned invalid response type: {type(raw_response).__name__}"
+                        }
+                    )
 
                 # Log tool call completion for dashboard
                 if self.conversation_logger:
@@ -715,7 +751,9 @@ Be concise - this is voice, not text."""
                 error_response = ToolResponse(result={"error": str(e)})
                 # Log tool call error for dashboard
                 if self.conversation_logger:
-                    await self.conversation_logger.log_tool_call_complete(name, error_response.result)
+                    await self.conversation_logger.log_tool_call_complete(
+                        name, error_response.result
+                    )
                 return error_response
 
         unknown_response = ToolResponse(result={"error": f"Unknown tool: {name}"})
@@ -733,7 +771,7 @@ class ConversatorSession:
         api_key: str,
         opencode_url: str = "http://localhost:8001",
         workspace_path: str = ".conversator",
-        config: ConversatorConfig | None = None
+        config: ConversatorConfig | None = None,
     ):
         """Initialize session.
 
@@ -761,10 +799,7 @@ class ConversatorSession:
 
         # Pass state, prompt_manager, and config to tool handler
         self.tool_handler = ToolHandler(
-            self.opencode,
-            state=self.state,
-            prompt_manager=self.prompt_manager,
-            config=self.config
+            self.opencode, state=self.state, prompt_manager=self.prompt_manager, config=self.config
         )
 
         # Use system prompt path from config
@@ -779,14 +814,13 @@ class ConversatorSession:
         # Create a new task for this session
         self.current_task = self.state.create_task(
             title="Voice Session",
-            working_prompt_path=str(self.workspace_path / "prompts" / "current" / "working.md")
+            working_prompt_path=str(self.workspace_path / "prompts" / "current" / "working.md"),
         )
 
         # Set up prompt manager for this task
         self.tool_handler.current_task_id = self.current_task.task_id
         await self.prompt_manager.init_working_prompt(
-            self.current_task.task_id,
-            title="Voice Session"
+            self.current_task.task_id, title="Voice Session"
         )
 
         print(f"[State: Created task {self.current_task.task_id[:8]}...]")

@@ -31,7 +31,7 @@ class ToolHandler:
         prompt_manager: "PromptManager | None" = None,
         current_task_id: str | None = None,
         config: "ConversatorConfig | None" = None,
-        session_state: "SessionState | None" = None
+        session_state: "SessionState | None" = None,
     ):
         """Initialize tool handler.
 
@@ -66,7 +66,7 @@ class ToolHandler:
             builder = OpenCodeBuilder(
                 name=name,
                 base_url=f"http://localhost:{builder_config.port}",
-                model=builder_config.model
+                model=builder_config.model,
             )
             self.builders.register(name, builder)
 
@@ -83,16 +83,21 @@ class ToolHandler:
 
         root = Path(self.config.root_project_dir)
         if not root.exists():
-            return {
-                "error": f"Workspace directory not found: {root}",
-                "projects": []
-            }
+            return {"error": f"Workspace directory not found: {root}", "projects": []}
 
         projects = []
-        project_markers = ['.git', 'pyproject.toml', 'package.json', 'Cargo.toml', 'go.mod', 'pom.xml', 'build.gradle']
+        project_markers = [
+            ".git",
+            "pyproject.toml",
+            "package.json",
+            "Cargo.toml",
+            "go.mod",
+            "pom.xml",
+            "build.gradle",
+        ]
 
         for item in root.iterdir():
-            if item.is_dir() and not item.name.startswith('.'):
+            if item.is_dir() and not item.name.startswith("."):
                 # Check if it looks like a project
                 is_project = any((item / marker).exists() for marker in project_markers)
                 if is_project:
@@ -104,7 +109,7 @@ class ToolHandler:
             return {
                 "summary": f"No projects found in {root}. You can create a new one.",
                 "projects": [],
-                "workspace": str(root)
+                "workspace": str(root),
             }
 
         # Build voice-friendly summary
@@ -113,11 +118,7 @@ class ToolHandler:
         else:
             summary = f"Found {len(projects)} projects: {', '.join(projects[:5])}, and {len(projects) - 5} more."
 
-        return {
-            "summary": summary,
-            "projects": projects,
-            "workspace": str(root)
-        }
+        return {"summary": summary, "projects": projects, "workspace": str(root)}
 
     async def handle_select_project(self, project_name: str) -> dict[str, Any]:
         """Select a project to work on.
@@ -138,7 +139,7 @@ class ToolHandler:
             available = await self.handle_list_projects()
             return {
                 "error": f"Project '{project_name}' not found.",
-                "suggestion": f"Available projects: {', '.join(available.get('projects', [])[:5])}"
+                "suggestion": f"Available projects: {', '.join(available.get('projects', [])[:5])}",
             }
 
         if not project_path.is_dir():
@@ -152,7 +153,7 @@ class ToolHandler:
             "summary": f"Selected project: {project_name}",
             "project_name": project_name,
             "project_path": str(project_path),
-            "hint": "Call start_builder to launch the coding agent in this project."
+            "hint": "Call start_builder to launch the coding agent in this project.",
         }
 
     async def handle_start_builder(self) -> dict[str, Any]:
@@ -164,7 +165,7 @@ class ToolHandler:
         if not self.session_state.current_project_path:
             return {
                 "error": "No project selected. Use select_project first.",
-                "hint": "Call list_projects to see available options."
+                "hint": "Call list_projects to see available options.",
             }
 
         project_path = self.session_state.current_project_path
@@ -186,7 +187,7 @@ class ToolHandler:
                 return {
                     "summary": f"Builder already running in {project_name}.",
                     "project_name": project_name,
-                    "status": "running"
+                    "status": "running",
                 }
             else:
                 # Different project - stop and restart
@@ -206,20 +207,17 @@ class ToolHandler:
                 "project_name": project_name,
                 "project_path": str(project_path),
                 "port": builder_port,
-                "status": "running"
+                "status": "running",
             }
         else:
             return {
                 "error": f"Failed to start builder in {project_name}.",
                 "project_name": project_name,
-                "hint": "Check if OpenCode is installed: which opencode"
+                "hint": "Check if OpenCode is installed: which opencode",
             }
 
     async def handle_create_project(
-        self,
-        project_name: str,
-        init_git: bool = True,
-        start_builder_after: bool = True
+        self, project_name: str, init_git: bool = True, start_builder_after: bool = True
     ) -> dict[str, Any]:
         """Create a new project folder in the workspace directory.
 
@@ -247,7 +245,7 @@ class ToolHandler:
         if project_path.exists():
             return {
                 "error": f"Project '{safe_name}' already exists.",
-                "hint": f"Use select_project to work on it, or choose a different name."
+                "hint": f"Use select_project to work on it, or choose a different name.",
             }
 
         try:
@@ -262,7 +260,7 @@ class ToolHandler:
                     cwd=str(project_path),
                     capture_output=True,
                     text=True,
-                    timeout=10
+                    timeout=10,
                 )
                 if result.returncode == 0:
                     print(f"[create_project] Initialized git in {safe_name}")
@@ -283,7 +281,7 @@ class ToolHandler:
                     "project_name": safe_name,
                     "project_path": str(project_path),
                     "git_initialized": init_git,
-                    "builder_status": builder_result.get("status", "unknown")
+                    "builder_status": builder_result.get("status", "unknown"),
                 }
             else:
                 return {
@@ -291,7 +289,7 @@ class ToolHandler:
                     "project_name": safe_name,
                     "project_path": str(project_path),
                     "git_initialized": init_git,
-                    "hint": "Call select_project and start_builder to begin coding."
+                    "hint": "Call select_project and start_builder to begin coding.",
                 }
 
         except PermissionError:
@@ -302,10 +300,7 @@ class ToolHandler:
     # === Planning and Context Handlers ===
 
     async def handle_engage_planner(
-        self,
-        task_description: str,
-        context: str = "",
-        urgency: str = "normal"
+        self, task_description: str, context: str = "", urgency: str = "normal"
     ) -> dict[str, Any]:
         """Engage planner subagent to refine a task.
 
@@ -339,14 +334,14 @@ class ToolHandler:
                 return {
                     "status": "ready",
                     "plan_file": plan_file,
-                    "summary": responses[-1] if responses else "Plan ready"
+                    "summary": responses[-1] if responses else "Plan ready",
                 }
 
         # Planner is asking questions - keep session active
         self.planner_session_active = True
         return {
             "status": "needs_input",
-            "questions": responses[-1] if responses else "Need more information"
+            "questions": responses[-1] if responses else "Need more information",
         }
 
     async def handle_planner_response(self, user_response: str) -> dict[str, Any]:
@@ -366,15 +361,27 @@ class ToolHandler:
                 filename = self._extract_filename(content)
                 return {"status": "ready", "plan_file": filename}
             elif event.get("type") == "message":
+                self.planner_session_active = True
                 return {"status": "needs_input", "questions": content}
 
+        self.planner_session_active = True
         return {"status": "error", "message": "No response from planner"}
 
-    async def handle_lookup_context(
-        self,
-        query: str,
-        scope: str = "both"
-    ) -> dict[str, Any]:
+    async def handle_continue_planner(self, user_response: str) -> dict[str, Any]:
+        """Continue an active planner session.
+
+        Use this after engage_planner returns status='needs_input'. Calling engage_planner
+        again for the same task can restart the planner and lead to looping questions.
+        """
+        if not self.planner_session_active:
+            return {
+                "status": "error",
+                "error": "Planner session is not active. Call engage_planner first.",
+            }
+
+        return await self.handle_planner_response(user_response)
+
+    async def handle_lookup_context(self, query: str, scope: str = "both") -> dict[str, Any]:
         """Look up context from memory or codebase.
 
         Args:
@@ -405,11 +412,7 @@ class ToolHandler:
         if self.state:
             active_tasks = self.state.get_active_tasks()
             status["tasks"] = [
-                {
-                    "task_id": t.task_id[:8],
-                    "title": t.title,
-                    "status": t.status
-                }
+                {"task_id": t.task_id[:8], "title": t.title, "status": t.status}
                 for t in active_tasks
             ]
             status["active_count"] = len(active_tasks)
@@ -438,10 +441,7 @@ class ToolHandler:
         # Also check Beads for task status
         try:
             result = subprocess.run(
-                ["bd", "status", "--json"],
-                capture_output=True,
-                text=True,
-                timeout=5
+                ["bd", "status", "--json"], capture_output=True, text=True, timeout=5
             )
             if result.returncode == 0:
                 beads_status = json.loads(result.stdout)
@@ -456,7 +456,7 @@ class ToolHandler:
         plan_file: str,
         agent: str = "auto",
         mode: str = "build",
-        parallel_with: str | None = None
+        parallel_with: str | None = None,
     ) -> dict[str, Any]:
         """Dispatch task to builder agent via Beads.
 
@@ -503,13 +503,13 @@ class ToolHandler:
                     result = await builder.dispatch_task_plan_mode(
                         task_id=self.current_task_id or "unknown",
                         prompt_path=str(plan_path),
-                        project_root=project_root
+                        project_root=project_root,
                     )
                 else:
                     result = await builder.dispatch_task(
                         task_id=self.current_task_id or "unknown",
                         prompt_path=str(plan_path),
-                        project_root=project_root
+                        project_root=project_root,
                     )
 
                 if result.get("dispatched"):
@@ -527,7 +527,7 @@ class ToolHandler:
                             "session_id": result.get("session_id"),
                             "project_root": project_root,
                             "awaiting_review": True,
-                            "message": f"Sent to {agent} in plan mode. Use get_builder_plan to review the proposal."
+                            "message": f"Sent to {agent} in plan mode. Use get_builder_plan to review the proposal.",
                         }
                     else:
                         return {
@@ -537,42 +537,30 @@ class ToolHandler:
                             "mode": "build",
                             "session_id": result.get("session_id"),
                             "project_root": project_root,
-                            "message": f"Sent to {agent}: {plan_path.name}" + (f" (project: {project_root})" if project_root else "")
+                            "message": f"Sent to {agent}: {plan_path.name}"
+                            + (f" (project: {project_root})" if project_root else ""),
                         }
                 else:
                     return {
                         "dispatched": False,
                         "error": result.get("error", "Failed to dispatch to builder"),
-                        "agent": agent
+                        "agent": agent,
                     }
             else:
                 return {
                     "dispatched": False,
                     "error": f"Builder {agent} is not responding",
-                    "agent": agent
+                    "agent": agent,
                 }
 
         # Fall back to Beads for claude-code or unknown agents
-        cmd = [
-            "bd", "create",
-            f"--file={plan_path}",
-            f"--assign={agent}",
-            f"--meta=mode:{mode}"
-        ]
+        cmd = ["bd", "create", f"--file={plan_path}", f"--assign={agent}", f"--meta=mode:{mode}"]
 
         try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=30
-            )
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
 
             if result.returncode != 0:
-                return {
-                    "error": f"Failed to create task: {result.stderr}",
-                    "dispatched": False
-                }
+                return {"error": f"Failed to create task: {result.stderr}", "dispatched": False}
 
             task_id = result.stdout.strip()
 
@@ -586,12 +574,15 @@ class ToolHandler:
                 await self._invoke_claude_code(task_id, str(active_path), mode)
 
             # Update status cache
-            await self.opencode.update_status(agent, {
-                "task_id": task_id,
-                "status": "dispatched",
-                "plan_file": str(active_path),
-                "mode": mode
-            })
+            await self.opencode.update_status(
+                agent,
+                {
+                    "task_id": task_id,
+                    "status": "dispatched",
+                    "plan_file": str(active_path),
+                    "mode": mode,
+                },
+            )
 
             return {
                 "dispatched": True,
@@ -599,7 +590,8 @@ class ToolHandler:
                 "agent": agent,
                 "mode": mode,
                 "project_root": project_root,
-                "message": f"Sent to {agent}: {plan_path.name}" + (f" (project: {project_root})" if project_root else "")
+                "message": f"Sent to {agent}: {plan_path.name}"
+                + (f" (project: {project_root})" if project_root else ""),
             }
 
         except subprocess.TimeoutExpired:
@@ -608,10 +600,7 @@ class ToolHandler:
             return {"error": "Beads (bd) not installed", "dispatched": False}
 
     async def handle_add_to_memory(
-        self,
-        content: str,
-        keywords: list[str] | None = None,
-        importance: str = "normal"
+        self, content: str, keywords: list[str] | None = None, importance: str = "normal"
     ) -> dict[str, Any]:
         """Save something to memory for future recall.
 
@@ -627,7 +616,7 @@ class ToolHandler:
             "timestamp": datetime.utcnow().isoformat(),
             "content": content,
             "keywords": keywords or [],
-            "importance": importance
+            "importance": importance,
         }
 
         # Append to atomic memory
@@ -637,16 +626,9 @@ class ToolHandler:
         # Update keyword index
         await self._update_memory_index(content, keywords or [])
 
-        return {
-            "saved": True,
-            "message": f"Got it, I'll remember that."
-        }
+        return {"saved": True, "message": f"Got it, I'll remember that."}
 
-    async def handle_cancel_task(
-        self,
-        task_id: str,
-        reason: str = ""
-    ) -> dict[str, Any]:
+    async def handle_cancel_task(self, task_id: str, reason: str = "") -> dict[str, Any]:
         """Cancel a running or pending task.
 
         Args:
@@ -661,12 +643,7 @@ class ToolHandler:
             if reason:
                 cmd.extend(["--reason", reason])
 
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=10
-            )
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
 
             if result.returncode == 0:
                 return {"canceled": True, "task_id": task_id}
@@ -676,10 +653,7 @@ class ToolHandler:
         except (subprocess.TimeoutExpired, FileNotFoundError) as e:
             return {"canceled": False, "error": str(e)}
 
-    async def handle_check_inbox(
-        self,
-        include_read: bool = False
-    ) -> dict[str, Any]:
+    async def handle_check_inbox(self, include_read: bool = False) -> dict[str, Any]:
         """Check for notifications in the inbox.
 
         Args:
@@ -696,7 +670,7 @@ class ToolHandler:
         if not items:
             return {
                 "summary": "No notifications." if not include_read else "No notifications at all.",
-                "count": 0
+                "count": 0,
             }
 
         # Group by severity for voice summary
@@ -726,19 +700,12 @@ class ToolHandler:
             "summary": summary,
             "count": len(items),
             "items": [
-                {
-                    "inbox_id": i.inbox_id,
-                    "severity": i.severity,
-                    "summary": i.summary
-                }
+                {"inbox_id": i.inbox_id, "severity": i.severity, "summary": i.summary}
                 for i in items[:5]  # Limit for voice
-            ]
+            ],
         }
 
-    async def handle_acknowledge_inbox(
-        self,
-        inbox_ids: list[str] | None = None
-    ) -> dict[str, Any]:
+    async def handle_acknowledge_inbox(self, inbox_ids: list[str] | None = None) -> dict[str, Any]:
         """Acknowledge/mark notifications as read.
 
         Args:
@@ -755,15 +722,14 @@ class ToolHandler:
             for inbox_id in inbox_ids:
                 self.state.acknowledge_inbox(inbox_id)
                 count += 1
-            return {
-                "acknowledged": count,
-                "summary": f"Acknowledged {count} notifications."
-            }
+            return {"acknowledged": count, "summary": f"Acknowledged {count} notifications."}
         else:
             count = self.state.acknowledge_all_inbox()
             return {
                 "acknowledged": count,
-                "summary": f"Cleared all {count} notifications." if count > 0 else "No notifications to clear."
+                "summary": f"Cleared all {count} notifications."
+                if count > 0
+                else "No notifications to clear.",
             }
 
     async def handle_update_working_prompt(
@@ -772,7 +738,7 @@ class ToolHandler:
         intent: str,
         requirements: list[str] | None = None,
         constraints: list[str] | None = None,
-        context: str | None = None
+        context: str | None = None,
     ) -> dict[str, Any]:
         """Update the working prompt with task details.
 
@@ -798,20 +764,14 @@ class ToolHandler:
             intent=intent,
             requirements=requirements,
             constraints=constraints,
-            context=context
+            context=context,
         )
 
         summary = self.prompt_manager.get_working_summary(self.current_task_id)
 
-        return {
-            "updated": True,
-            "summary": summary
-        }
+        return {"updated": True, "summary": summary}
 
-    async def handle_freeze_prompt(
-        self,
-        confirm_summary: str | None = None
-    ) -> dict[str, Any]:
+    async def handle_freeze_prompt(self, confirm_summary: str | None = None) -> dict[str, Any]:
         """Freeze the working prompt to handoff format.
 
         Args:
@@ -835,7 +795,7 @@ class ToolHandler:
                 "frozen": True,
                 "handoff_md_path": str(handoff_md_path),
                 "handoff_json_path": str(handoff_json_path),
-                "summary": f"Prompt frozen and ready for builder. Files at {handoff_md_path.parent}"
+                "summary": f"Prompt frozen and ready for builder. Files at {handoff_md_path.parent}",
             }
 
         except FileNotFoundError as e:
@@ -857,8 +817,13 @@ class ToolHandler:
 
         # Route complex tasks to Claude Code
         complex_keywords = [
-            "architecture", "refactor", "security", "design",
-            "restructure", "migration", "overhaul"
+            "architecture",
+            "refactor",
+            "security",
+            "design",
+            "restructure",
+            "migration",
+            "overhaul",
         ]
         if any(word in plan_lower for word in complex_keywords):
             return "claude-code"
@@ -875,12 +840,7 @@ class ToolHandler:
         # Default to OpenCode for simpler tasks
         return "opencode"
 
-    async def _invoke_claude_code(
-        self,
-        task_id: str,
-        plan_file: str,
-        mode: str
-    ) -> None:
+    async def _invoke_claude_code(self, task_id: str, plan_file: str, mode: str) -> None:
         """Invoke Claude Code with task.
 
         Claude Code handles its own worktree management.
@@ -893,11 +853,15 @@ class ToolHandler:
         model = "opus" if mode == "plan" else "sonnet"
 
         # Claude Code handles worktree management internally
-        subprocess.Popen([
-            "claude",
-            "--model", model,
-            "--print", f"Execute task from {plan_file}. Task ID: {task_id}"
-        ])
+        subprocess.Popen(
+            [
+                "claude",
+                "--model",
+                model,
+                "--print",
+                f"Execute task from {plan_file}. Task ID: {task_id}",
+            ]
+        )
 
     def _extract_filename(self, content: str) -> str:
         """Extract filename from READY_FOR_BUILDER signal.
@@ -913,11 +877,7 @@ class ToolHandler:
             return match.group(1)
         return "unknown.md"
 
-    async def _update_memory_index(
-        self,
-        content: str,
-        keywords: list[str]
-    ) -> None:
+    async def _update_memory_index(self, content: str, keywords: list[str]) -> None:
         """Update the memory keyword index.
 
         Args:
@@ -936,10 +896,9 @@ class ToolHandler:
         for keyword in keywords:
             if keyword not in index.get("keywords", {}):
                 index.setdefault("keywords", {})[keyword] = []
-            index["keywords"][keyword].append({
-                "timestamp": datetime.utcnow().isoformat(),
-                "preview": content[:100]
-            })
+            index["keywords"][keyword].append(
+                {"timestamp": datetime.utcnow().isoformat(), "preview": content[:100]}
+            )
 
         async with aiofiles.open(self._memory_index_path, "w") as f:
             await f.write(yaml.dump(index))
@@ -995,7 +954,10 @@ class ToolHandler:
         # Check blocked patterns first
         for pattern in self.BLOCKED_PATTERNS:
             if re.search(pattern, command):
-                return False, f"Command contains blocked pattern. Use engage_planner for this operation."
+                return (
+                    False,
+                    f"Command contains blocked pattern. Use engage_planner for this operation.",
+                )
 
         if operation == "query":
             for pattern in self.QUICK_QUERY_PATTERNS:
@@ -1012,10 +974,7 @@ class ToolHandler:
         return False, "Unknown operation type."
 
     async def handle_quick_dispatch(
-        self,
-        operation: str,
-        command: str,
-        working_dir: str | None = None
+        self, operation: str, command: str, working_dir: str | None = None
     ) -> dict[str, Any]:
         """Execute quick operations via the fastest available builder.
 
@@ -1042,7 +1001,7 @@ class ToolHandler:
                 "requires_full_dispatch": True,
                 "reason": reason,
                 "command": command,
-                "hint": "Use engage_planner to properly plan and dispatch this operation."
+                "hint": "Use engage_planner to properly plan and dispatch this operation.",
             }
 
         # Determine working directory
@@ -1062,17 +1021,20 @@ class ToolHandler:
                 capture_output=True,
                 text=True,
                 timeout=30,  # Quick ops should be fast
-                cwd=cwd
+                cwd=cwd,
             )
 
             # Emit event for audit trail
             if self.state:
-                self.state.emit_event("QuickDispatchExecuted", {
-                    "command": command,
-                    "operation": operation,
-                    "builder": "local",
-                    "success": result.returncode == 0
-                })
+                self.state.emit_event(
+                    "QuickDispatchExecuted",
+                    {
+                        "command": command,
+                        "operation": operation,
+                        "builder": "local",
+                        "success": result.returncode == 0,
+                    },
+                )
 
             if result.returncode == 0:
                 output = result.stdout.strip() if result.stdout else "Done."
@@ -1082,36 +1044,28 @@ class ToolHandler:
                     "output": output,
                     "command": command,
                     "working_dir": cwd,
-                    "via": "local"
+                    "via": "local",
                 }
             else:
-                error = result.stderr.strip() if result.stderr else f"Command failed with code {result.returncode}"
+                error = (
+                    result.stderr.strip()
+                    if result.stderr
+                    else f"Command failed with code {result.returncode}"
+                )
                 print(f"[quick_dispatch] FAILED: {error}")
-                return {
-                    "success": False,
-                    "error": error,
-                    "command": command,
-                    "working_dir": cwd
-                }
+                return {"success": False, "error": error, "command": command, "working_dir": cwd}
 
         except subprocess.TimeoutExpired:
             return {
                 "success": False,
                 "error": "Command timed out (30s limit for quick operations)",
-                "command": command
+                "command": command,
             }
         except Exception as e:
-            return {
-                "success": False,
-                "error": str(e),
-                "command": command
-            }
+            return {"success": False, "error": str(e), "command": command}
 
     async def handle_engage_brainstormer(
-        self,
-        topic: str,
-        context: str = "",
-        constraints: list[str] | None = None
+        self, topic: str, context: str = "", constraints: list[str] | None = None
     ) -> dict[str, Any]:
         """Engage brainstormer subagent for free-form ideation.
 
@@ -1141,10 +1095,7 @@ class ToolHandler:
 
         return {"response": "Let's think about this..."}
 
-    async def handle_get_builder_plan(
-        self,
-        task_id: str
-    ) -> dict[str, Any]:
+    async def handle_get_builder_plan(self, task_id: str) -> dict[str, Any]:
         """Get the plan response from a builder in plan mode.
 
         Args:
@@ -1166,7 +1117,7 @@ class ToolHandler:
                         "builder": name,
                         "plan": plan,
                         "summary": summary,
-                        "awaiting_approval": True
+                        "awaiting_approval": True,
                     }
 
         # Check local state for plan file
@@ -1176,19 +1127,19 @@ class ToolHandler:
                 return {
                     "task_id": task_id,
                     "plan": task.plan_response,
-                    "summary": task.plan_response[:500] + "..." if len(task.plan_response) > 500 else task.plan_response,
-                    "awaiting_approval": True
+                    "summary": task.plan_response[:500] + "..."
+                    if len(task.plan_response) > 500
+                    else task.plan_response,
+                    "awaiting_approval": True,
                 }
 
         return {
             "error": f"No plan found for task {task_id}. Make sure to dispatch with mode='plan' first.",
-            "task_id": task_id
+            "task_id": task_id,
         }
 
     async def handle_approve_builder_plan(
-        self,
-        task_id: str,
-        modifications: str = ""
+        self, task_id: str, modifications: str = ""
     ) -> dict[str, Any]:
         """Approve a builder's plan and start implementation.
 
@@ -1212,10 +1163,10 @@ class ToolHandler:
                         "approved": True,
                         "task_id": task_id,
                         "builder": name,
-                        "message": f"Building started on {name}. I'll notify you when complete."
+                        "message": f"Building started on {name}. I'll notify you when complete.",
                     }
 
         return {
             "error": f"No pending plan found for task {task_id}. Get the plan first with get_builder_plan.",
-            "task_id": task_id
+            "task_id": task_id,
         }

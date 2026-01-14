@@ -201,8 +201,8 @@ class TestAutoRouting:
         assert agent == "claude-code"
 
     @pytest.mark.asyncio
-    async def test_routes_simple_to_opencode_fast(self, handler, temp_workspace):
-        """Simple tasks route to opencode-fast."""
+    async def test_routes_simple_to_opencode(self, handler, temp_workspace):
+        """Simple tasks route to opencode."""
         plan_file = temp_workspace / ".conversator" / "plans" / "drafts" / "test.md"
         plan_file.write_text("""
         # Add button
@@ -211,7 +211,7 @@ class TestAutoRouting:
 
         agent = await handler._auto_route(plan_file)
 
-        assert agent == "opencode-fast"
+        assert agent == "opencode"
 
     @pytest.mark.asyncio
     async def test_routes_large_to_claude_code(self, handler, temp_workspace):
