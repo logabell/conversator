@@ -367,3 +367,13 @@ class TestFilenameExtraction:
         content = "Some other message without the signal"
         filename = handler._extract_filename(content)
         assert filename == "unknown.md"
+
+
+class TestAcknowledgmentDetection:
+    """Regression tests for acknowledgement heuristics."""
+
+    def test_yes_prefix_with_more_content_is_not_ack(self):
+        handler = ToolHandler(opencode=AsyncMock())
+
+        assert handler._is_acknowledgment("yes") is True
+        assert handler._is_acknowledgment("Yes, I want this to be web-based") is False

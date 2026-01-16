@@ -16,9 +16,10 @@ CONVERSATOR_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "select_project",
-        "description": """Select a project to work on. This sets the project context
-        for the builder. Call when user specifies which project they want to work on,
-        like 'let's work on my-app' or 'open the website project'.""",
+        "description": """Select a project to work on and start the builder automatically.
+        Call when user specifies which project they want to work on, like "let's work on my-app".
+        Do not ask whether to start the builder — assume yes.""",
+
         "parameters": {
             "type": "object",
             "properties": {
@@ -32,10 +33,10 @@ CONVERSATOR_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "start_builder",
-        "description": """Start the coding agent (OpenCode) in the current project directory.
-        Call after selecting a project with select_project. This launches the builder
-        so it can execute coding tasks in the selected project. You can combine this
-        with select_project in a single turn when user says 'let's work on X'.""",
+        "description": """Start (or restart) the coding agent (OpenCode) in the current project directory.
+        Use when the user asks to start/restart the builder, or if the builder is not running.
+        Usually not needed after select_project because select_project auto-starts the builder.""",
+
         "parameters": {"type": "object", "properties": {}},
     },
     {
@@ -61,6 +62,43 @@ CONVERSATOR_TOOLS: list[dict[str, Any]] = [
                 },
             },
             "required": ["project_name"],
+        },
+    },
+    {
+        "name": "engage_with_project",
+        "description": """Select a project (fuzzy match) and engage a subagent in one step.
+        Use when the user implies BOTH the project and an action, e.g.:
+        - 'brainstorm my calculator app'
+        - 'plan an auth flow for the website'
+
+        This avoids extra back-and-forth: it selects the project, starts the builder,
+        then begins either planner or brainstormer flow.""",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "project": {
+                    "type": "string",
+                    "description": "Project name/hint (fuzzy matched)",
+                },
+                "project_hint": {
+                    "type": "string",
+                    "description": "Alias for project (for backward compatibility)",
+                },
+                "subagent": {
+                    "type": "string",
+                    "enum": ["planner", "brainstormer"],
+                    "description": "Which subagent to engage",
+                },
+                "topic": {
+                    "type": "string",
+                    "description": "Task/topic to send to the subagent",
+                },
+                "context": {
+                    "type": "string",
+                    "description": "Optional extra context",
+                },
+            },
+            "required": ["project", "subagent", "topic"],
         },
     },
     # === Planning and Context Tools ===
@@ -102,6 +140,36 @@ CONVERSATOR_TOOLS: list[dict[str, Any]] = [
                 "user_response": {
                     "type": "string",
                     "description": "The user's answer to the planner's question(s)",
+                }
+            },
+            "required": ["user_response"],
+        },
+    },
+    {
+        "name": "confirm_send_to_subagent",
+        "description": """Confirm and send collected answers/context to the active subagent.
+        Use after all questions are answered and the user confirms you're ready to send.""",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "additional_context": {
+                    "type": "string",
+                    "description": "Optional extra context to include when sending",
+                }
+            },
+        },
+    },
+    {
+        "name": "continue_brainstormer",
+        "description": """Continue an active brainstorm relay.
+        Use after engage_brainstormer returns status='needs_detail' or 'needs_confirmation',
+        or when relaying answers back to brainstormer questions.""",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "user_response": {
+                    "type": "string",
+                    "description": "The user's message/answer/confirmation",
                 }
             },
             "required": ["user_response"],
@@ -314,11 +382,15 @@ CONVERSATOR_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "engage_brainstormer",
-        "description": """Engage the brainstormer subagent for free-form ideation
-        and discussion. Use for exploring ideas, discussing trade-offs,
-        thinking through approaches, or creative problem-solving.
-        Unlike the planner (which produces prompts), brainstormer is for
-        open-ended exploration.""",
+        "description": """Start a brainstorm relay draft.
+
+        IMPORTANT: this does NOT immediately send anything to a subagent.
+        Use it when the user says they want to brainstorm. Then:
+        - Ask the user for their full thoughts/details.
+        - Ask for confirmation ("Anything else?" / "Want me to send?").
+        - Only after confirmation (or silence auto-confirm) will Conversator
+          relay the message to the brainstormer subagent in OpenCode.
+        """,
         "parameters": {
             "type": "object",
             "properties": {
@@ -331,6 +403,89 @@ CONVERSATOR_TOOLS: list[dict[str, Any]] = [
                 },
             },
             "required": ["topic"],
+        },
+    },
+    {
+        "name": "start_subagent_thread",
+        "description": """Start a NEW subagent session thread.
+        Use when you want multiple concurrent brainstorms or plans.""",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "subagent": {
+                    "type": "string",
+                    "enum": ["planner", "brainstormer"],
+                    "description": "Which subagent to start",
+                },
+                "topic": {
+                    "type": "string",
+                    "description": "Optional topic label for the thread",
+                },
+                "focus": {
+                    "type": "boolean",
+                    "description": "Whether to focus this thread (default: true)",
+                },
+            },
+            "required": ["subagent"],
+        },
+    },
+    {
+        "name": "send_to_thread",
+        "description": """Send a message to a thread (non-blocking).
+        Use after start_subagent_thread or to continue the focused thread.""",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "message": {"type": "string", "description": "Message to send"},
+                "thread_id": {
+                    "type": "string",
+                    "description": "Optional thread_id (defaults to focused thread)",
+                },
+                "subagent": {
+                    "type": "string",
+                    "enum": ["planner", "brainstormer"],
+                    "description": "Subagent name (required if creating a new thread)",
+                },
+                "topic": {
+                    "type": "string",
+                    "description": "Topic label (used when creating a new thread)",
+                },
+                "create_new_thread": {
+                    "type": "boolean",
+                    "description": "Create a new thread instead of using an existing one",
+                },
+                "focus": {
+                    "type": "boolean",
+                    "description": "Whether to focus the thread (default: true)",
+                },
+            },
+            "required": ["message"],
+        },
+    },
+    {
+        "name": "list_threads",
+        "description": """List all active subagent threads.
+        Use when you want to see what threads exist and which one is focused.""",
+        "parameters": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "focus_thread",
+        "description": """Focus an existing thread.
+        Call when you want future messages to go to a specific thread.""",
+        "parameters": {
+            "type": "object",
+            "properties": {"thread_id": {"type": "string", "description": "Thread ID to focus"}},
+            "required": ["thread_id"],
+        },
+    },
+    {
+        "name": "open_thread",
+        "description": """Open a thread and relay its latest response/questions.
+        Use when you want to hear what a thread replied.""",
+        "parameters": {
+            "type": "object",
+            "properties": {"thread_id": {"type": "string", "description": "Thread ID to open"}},
+            "required": ["thread_id"],
         },
     },
     {

@@ -1,7 +1,5 @@
 """Tests for tool definitions - validates Gemini Live tool schemas."""
 
-import pytest
-
 from conversator_voice.tools import CONVERSATOR_TOOLS, get_tool_by_name
 
 
@@ -15,7 +13,7 @@ class TestToolDefinitions:
     def test_correct_number_of_tools(self):
         """Expected number of tools defined."""
         # Keep this in sync with conversator_voice.tools.CONVERSATOR_TOOLS
-        assert len(CONVERSATOR_TOOLS) == 19
+        assert len(CONVERSATOR_TOOLS) == 27
 
     def test_all_tools_have_required_fields(self):
         """Each tool has name, description, and parameters."""
@@ -37,9 +35,14 @@ class TestToolDefinitions:
             "select_project",
             "start_builder",
             "create_project",
-            # Planning and context
+            "engage_with_project",
+            # Subagent engagement
             "engage_planner",
             "continue_planner",
+            "confirm_send_to_subagent",
+            "engage_brainstormer",
+            "continue_brainstormer",
+            # Planning and context
             "lookup_context",
             "check_status",
             "dispatch_to_builder",
@@ -53,8 +56,12 @@ class TestToolDefinitions:
             "freeze_prompt",
             # Safe shell helper
             "quick_dispatch",
-            # Brainstorming
-            "engage_brainstormer",
+            # Threaded subagent sessions
+            "start_subagent_thread",
+            "send_to_thread",
+            "list_threads",
+            "focus_thread",
+            "open_thread",
             # Builder review flow
             "get_builder_plan",
             "approve_builder_plan",
@@ -228,21 +235,32 @@ class TestToolDescriptions:
         """All tools have non-empty descriptions."""
         for tool in CONVERSATOR_TOOLS:
             desc = tool["description"]
-            assert desc and len(desc.strip()) > 0, (
-                f"Tool {tool['name']} has empty description"
-            )
+            assert desc and len(desc.strip()) > 0, f"Tool {tool['name']} has empty description"
 
     def test_descriptions_are_actionable(self):
         """Tool descriptions explain when to use the tool."""
         # Key phrases that indicate actionable guidance
-        trigger_phrases = ["use when", "use this", "call when", "engage", "get", "check", "send", "save", "cancel", "mark", "update", "freeze", "execute", "approve"]
+        trigger_phrases = [
+            "use when",
+            "use this",
+            "call when",
+            "engage",
+            "get",
+            "check",
+            "send",
+            "save",
+            "cancel",
+            "mark",
+            "update",
+            "freeze",
+            "execute",
+            "approve",
+        ]
 
         for tool in CONVERSATOR_TOOLS:
             desc = tool["description"].lower()
             has_trigger = any(phrase in desc for phrase in trigger_phrases)
-            assert has_trigger, (
-                f"Tool {tool['name']} description lacks actionable guidance"
-            )
+            assert has_trigger, f"Tool {tool['name']} description lacks actionable guidance"
 
     def test_property_descriptions_present(self):
         """Tool properties have descriptions."""

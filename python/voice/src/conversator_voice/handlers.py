@@ -1,24 +1,26 @@
 """Tool handlers for Conversator - dispatches to subagents and Beads."""
 
 import asyncio
+import inspect
 import json
 import re
 import subprocess
 from datetime import datetime
 from pathlib import Path
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import aiofiles
 
-from .opencode_client import OpenCodeClient
-from .builder_client import OpenCodeBuilder, BuilderRegistry
+from .builder_client import BuilderRegistry, OpenCodeBuilder
 from .builder_manager import BuilderManager
+from .opencode_client import OpenCodeClient
 from .session_state import SessionState
+from .subagent_conversation import QuestionParser, SubagentConversationState, SubagentQuestion
 
 if TYPE_CHECKING:
     from .config import ConversatorConfig
-    from .state import StateStore
     from .prompt_manager import PromptManager
+    from .state import StateStore
 
 
 class ToolHandler:
@@ -85,7 +87,7 @@ class ToolHandler:
         if not root.exists():
             return {"error": f"Workspace directory not found: {root}", "projects": []}
 
-        projects = []
+        entries: list[tuple[str, bool]] = []
         project_markers = [
             ".git",
             "pyproject.toml",
@@ -97,13 +99,18 @@ class ToolHandler:
         ]
 
         for item in root.iterdir():
-            if item.is_dir() and not item.name.startswith("."):
-                # Check if it looks like a project
-                is_project = any((item / marker).exists() for marker in project_markers)
-                if is_project:
-                    projects.append(item.name)
+            if not item.is_dir() or item.name.startswith("."):
+                continue
 
-        projects.sort()
+            # Hybrid discovery: include all folders, but rank marker-based projects first.
+            has_marker = any((item / marker).exists() for marker in project_markers)
+            entries.append((item.name, has_marker))
+
+        # Marker-based first, then alphabetical
+        entries.sort(key=lambda e: (not e[1], e[0].lower()))
+
+        projects = [name for name, _has_marker in entries]
+        marker_projects = [name for name, has_marker in entries if has_marker]
 
         if not projects:
             return {
@@ -112,49 +119,163 @@ class ToolHandler:
                 "workspace": str(root),
             }
 
-        # Build voice-friendly summary
+        preview = projects[:5]
         if len(projects) <= 5:
-            summary = f"Found {len(projects)} projects: {', '.join(projects)}."
+            summary = f"Found {len(projects)} projects: {', '.join(preview)}."
         else:
-            summary = f"Found {len(projects)} projects: {', '.join(projects[:5])}, and {len(projects) - 5} more."
+            summary = (
+                f"Found {len(projects)} projects: {', '.join(preview)}, "
+                f"and {len(projects) - 5} more."
+            )
 
-        return {"summary": summary, "projects": projects, "workspace": str(root)}
+        return {
+            "summary": summary,
+            "projects": projects,
+            "projects_detailed": [
+                {"name": name, "has_marker": has_marker} for name, has_marker in entries
+            ],
+            "marker_project_count": len(marker_projects),
+            "workspace": str(root),
+        }
 
-    async def handle_select_project(self, project_name: str) -> dict[str, Any]:
-        """Select a project to work on.
+    async def handle_select_project(
+        self, project_name: str, auto_start_builder: bool = True
+    ) -> dict[str, Any]:
+        """Select a project to work on with fuzzy matching support.
+
+        Supports fuzzy matching - if user says "calculator app" but folder is
+        "calculator", it will match. If multiple matches, returns options for
+        clarification. Auto-starts builder after selection.
 
         Args:
-            project_name: Name of the project folder to select
+            project_name: Name of the project folder to select (supports fuzzy match)
+            auto_start_builder: Whether to auto-start builder after selection
 
         Returns:
-            Confirmation with project path
+            Confirmation with project path, or clarification request if multiple matches
         """
+        try:
+            from rapidfuzz import fuzz as _fuzz  # type: ignore
+            from rapidfuzz import process as _process
+        except Exception:
+            _fuzz = None
+            _process = None
+
+        # Fallback: avoid hard failure if rapidfuzz isn't installed.
+        import difflib
+
+        def _extract_matches(query: str, choices: list[str]) -> list[tuple[str, int, int]]:
+            if _process is not None and _fuzz is not None:
+                extracted = _process.extract(
+                    query,
+                    choices,
+                    scorer=_fuzz.WRatio,
+                    limit=3,
+                    score_cutoff=60,
+                )
+                results: list[tuple[str, int, int]] = []
+                for idx, (name, score, choice_idx) in enumerate(extracted):
+                    results.append(
+                        (name, int(score), int(choice_idx) if choice_idx is not None else idx)
+                    )
+                results.sort(key=lambda r: r[1], reverse=True)
+                return results
+
+            close = difflib.get_close_matches(query, choices, n=3, cutoff=0.6)
+            results: list[tuple[str, int, int]] = []
+            for idx, name in enumerate(close):
+                score = int(
+                    difflib.SequenceMatcher(None, query.lower(), name.lower()).ratio() * 100
+                )
+                results.append((name, score, idx))
+            results.sort(key=lambda r: r[1], reverse=True)
+            return results
+
         if not self.config:
             return {"error": "Configuration not available."}
 
+        # Get available projects
+        available = await self.handle_list_projects()
+        projects = available.get("projects", [])
+
+        if not projects:
+            return {"error": "No projects found in workspace."}
+
         project_path = Path(self.config.root_project_dir) / project_name
 
-        if not project_path.exists():
-            # List available projects to help user
-            available = await self.handle_list_projects()
+        # Check for exact match first
+        if project_path.exists() and project_path.is_dir():
+            return await self._do_select_project(project_name, project_path, auto_start_builder)
+
+        # Normalize common conversational suffixes: "app", "project", etc.
+        normalized_query = re.sub(
+            r"\b(app|project|repo|repository)\b", " ", project_name, flags=re.IGNORECASE
+        )
+        normalized_query = re.sub(r"\s+", " ", normalized_query).strip()
+
+        # Fuzzy match - search for similar project names
+        matches = _extract_matches(normalized_query or project_name, projects)
+
+        if not matches:
+            available_preview = ", ".join(projects[:5])
             return {
-                "error": f"Project '{project_name}' not found.",
-                "suggestion": f"Available projects: {', '.join(available.get('projects', [])[:5])}",
+                "error": f"No project matches '{project_name}'.",
+                "available_projects": projects[:5],
+                "say": (
+                    f"I couldn't find a project matching '{project_name}'. "
+                    f"Available projects are: {available_preview}."
+                ),
             }
 
-        if not project_path.is_dir():
-            return {"error": f"'{project_name}' is not a directory."}
+        # High confidence single match (score > 85) - auto-select
+        if len(matches) == 1 or matches[0][1] > 85:
+            best_match = matches[0][0]
+            best_path = Path(self.config.root_project_dir) / best_match
+            result = await self._do_select_project(best_match, best_path, auto_start_builder)
+            result["fuzzy_matched"] = True
+            result["original_query"] = project_name
+            return result
 
-        # Update session state
+        # Multiple matches with similar scores - ask for clarification
+        match_names = [m[0] for m in matches]
+        match_preview = ", ".join(match_names)
+        return {
+            "status": "needs_clarification",
+            "message": f"I found multiple projects matching '{project_name}'",
+            "matches": match_names,
+            "say": (
+                f"I found {len(match_names)} projects that could match: {match_preview}. "
+                "Which one did you mean?"
+            ),
+        }
+
+    async def _do_select_project(
+        self, project_name: str, project_path: Path, auto_start_builder: bool = True
+    ) -> dict[str, Any]:
+        """Internal: Actually select the project and optionally start builder."""
         self.session_state.current_project = project_name
         self.session_state.current_project_path = project_path
 
-        return {
-            "summary": f"Selected project: {project_name}",
+        result: dict[str, Any] = {
             "project_name": project_name,
             "project_path": str(project_path),
-            "hint": "Call start_builder to launch the coding agent in this project.",
         }
+
+        if auto_start_builder:
+            builder_result = await self.handle_start_builder()
+            if builder_result.get("status") == "running":
+                result["summary"] = f"Selected {project_name} and started builder. Ready to code!"
+                result["builder_status"] = "running"
+            else:
+                builder_error = builder_result.get("error", "unknown status")
+                result["summary"] = f"Selected {project_name}. Builder: {builder_error}"
+                result["builder_status"] = "error"
+                result["builder_error"] = builder_result.get("error")
+        else:
+            result["summary"] = f"Selected project: {project_name}"
+            result["hint"] = "Call start_builder to launch the coding agent."
+
+        return result
 
     async def handle_start_builder(self) -> dict[str, Any]:
         """Start the builder (OpenCode) in the current project directory.
@@ -245,7 +366,7 @@ class ToolHandler:
         if project_path.exists():
             return {
                 "error": f"Project '{safe_name}' already exists.",
-                "hint": f"Use select_project to work on it, or choose a different name.",
+                "hint": "Use select_project to work on it, or choose a different name.",
             }
 
         try:
@@ -277,7 +398,9 @@ class ToolHandler:
                 builder_result = await self.handle_start_builder()
 
                 return {
-                    "summary": f"Created project '{safe_name}' and started the builder. Ready to code!",
+                    "summary": (
+                        f"Created project '{safe_name}' and started the builder. Ready to code!"
+                    ),
                     "project_name": safe_name,
                     "project_path": str(project_path),
                     "git_initialized": init_git,
@@ -285,7 +408,9 @@ class ToolHandler:
                 }
             else:
                 return {
-                    "summary": f"Created project '{safe_name}'. Use select_project to start working on it.",
+                    "summary": (
+                        f"Created project '{safe_name}'. Use select_project to start working on it."
+                    ),
                     "project_name": safe_name,
                     "project_path": str(project_path),
                     "git_initialized": init_git,
@@ -337,11 +462,38 @@ class ToolHandler:
                     "summary": responses[-1] if responses else "Plan ready",
                 }
 
-        # Planner is asking questions - keep session active
+        full_response = responses[-1] if responses else ""
+
+        questions = QuestionParser.parse_questions(full_response)
+        if questions:
+            await self._rewrite_questions_for_voice(questions)
+            session_id = self.opencode.active_sessions.get("planner", "")
+            self.session_state.active_subagent_conversation = SubagentConversationState(
+                subagent_name="planner",
+                session_id=session_id,
+                questions=questions,
+            )
+            self.planner_session_active = True
+
+            conv = self.session_state.active_subagent_conversation
+
+            return {
+                "status": "needs_input",
+                "question_count": len(questions),
+                "current_question": 1,
+                "total_questions": len(questions),
+                "questions": [q.text for q in questions],
+                "say": self._format_question_prompt(conv, is_first=True)
+                if conv
+                else questions[0].text,
+            }
+
+        # No questions detected.
         self.planner_session_active = True
         return {
             "status": "needs_input",
-            "questions": responses[-1] if responses else "Need more information",
+            "response": full_response,
+            "say": full_response[:500] if full_response else "Need more information.",
         }
 
     async def handle_planner_response(self, user_response: str) -> dict[str, Any]:
@@ -374,11 +526,49 @@ class ToolHandler:
         again for the same task can restart the planner and lead to looping questions.
         """
         if not self.planner_session_active:
+            draft = self.session_state.active_draft
+            conv = self.session_state.active_subagent_conversation
+            focused = self.session_state.get_focused_thread()
+
+            if (
+                (draft and draft.target_subagent == "brainstormer")
+                or (conv and conv.subagent_name == "brainstormer")
+                or (focused and focused.subagent == "brainstormer")
+            ):
+                return await self.handle_continue_brainstormer(user_response)
+
             return {
                 "status": "error",
                 "error": "Planner session is not active. Call engage_planner first.",
             }
 
+        conv = self.session_state.active_subagent_conversation
+        if conv and conv.subagent_name == "planner":
+            if conv.awaiting_send_confirmation:
+                return await self._handle_final_review(conv, user_response, subagent="planner")
+
+            has_more = conv.record_answer(user_response.strip())
+            if has_more:
+                return {
+                    "status": "needs_input",
+                    "question_count": conv.total_questions,
+                    "current_question": conv.current_question_number,
+                    "total_questions": conv.total_questions,
+                    "questions": [q.text for q in conv.questions],
+                    "say": self._format_question_prompt(conv, is_first=False),
+                }
+
+            conv.start_send_confirmation()
+            return {
+                "status": "awaiting_confirmation",
+                "answers_collected": conv.total_questions,
+                "say": (
+                    "I've got your answers. Want to change anything before I send them to the "
+                    "planner?"
+                ),
+            }
+
+        # Legacy mode: no active conversation state.
         return await self.handle_planner_response(user_response)
 
     async def handle_lookup_context(self, query: str, scope: str = "both") -> dict[str, Any]:
@@ -480,6 +670,49 @@ class ToolHandler:
         if not project_root and self.config:
             project_root = self.config.root_project_dir
 
+        # Avoid dispatching to builders while brainstorming.
+        focused = self.session_state.get_focused_thread()
+        if (
+            focused
+            and focused.subagent == "brainstormer"
+            and focused.status
+            in (
+                "waiting_response",
+                "has_response",
+                "awaiting_user",
+            )
+        ):
+            return {
+                "dispatched": False,
+                "error": "Brainstorm still in progress.",
+                "agent": agent,
+                "say": (
+                    "Let's finish the brainstorm first. Say 'send to builder' when you want "
+                    "to start coding."
+                ),
+            }
+
+        if self.session_state.active_subagent_conversation and (
+            self.session_state.active_subagent_conversation.subagent_name == "brainstormer"
+        ):
+            return {
+                "dispatched": False,
+                "error": "Brainstorm Q and A still in progress.",
+                "agent": agent,
+                "say": (
+                    "Let's finish the brainstorm first. Say 'send to builder' when you want "
+                    "to start coding."
+                ),
+            }
+
+        if not self._user_intends_builder():
+            return {
+                "dispatched": False,
+                "error": "User has not requested builder dispatch.",
+                "agent": agent,
+                "say": "I can send this to a builder when you explicitly say 'send to builder'.",
+            }
+
         # Validate plan file exists
         plan_path = Path(plan_file)
         if not plan_path.exists():
@@ -527,7 +760,10 @@ class ToolHandler:
                             "session_id": result.get("session_id"),
                             "project_root": project_root,
                             "awaiting_review": True,
-                            "message": f"Sent to {agent} in plan mode. Use get_builder_plan to review the proposal.",
+                            "message": (
+                                f"Sent to {agent} in plan mode. "
+                                "Use get_builder_plan to review the proposal."
+                            ),
                         }
                     else:
                         return {
@@ -626,7 +862,7 @@ class ToolHandler:
         # Update keyword index
         await self._update_memory_index(content, keywords or [])
 
-        return {"saved": True, "message": f"Got it, I'll remember that."}
+        return {"saved": True, "message": "Got it, I'll remember that."}
 
     async def handle_cancel_task(self, task_id: str, reason: str = "") -> dict[str, Any]:
         """Cancel a running or pending task.
@@ -786,6 +1022,49 @@ class ToolHandler:
         if not self.current_task_id:
             return {"error": "No active task."}
 
+        # Avoid freezing while we're still brainstorming.
+        focused = self.session_state.get_focused_thread()
+        if (
+            focused
+            and focused.subagent == "brainstormer"
+            and focused.status
+            in (
+                "waiting_response",
+                "has_response",
+                "awaiting_user",
+            )
+        ):
+            return {
+                "frozen": False,
+                "error": "Brainstorm still in progress.",
+                "say": (
+                    "Let's finish the brainstorm first. Tell me when you're ready to "
+                    "send something to a builder."
+                ),
+            }
+
+        if self.session_state.active_subagent_conversation and (
+            self.session_state.active_subagent_conversation.subagent_name == "brainstormer"
+        ):
+            return {
+                "frozen": False,
+                "error": "Brainstorm Q and A still in progress.",
+                "say": (
+                    "Let's finish the brainstorm first. Tell me when you're ready to "
+                    "send something to a builder."
+                ),
+            }
+
+        if not self._user_intends_builder():
+            return {
+                "frozen": False,
+                "error": "User has not requested builder dispatch.",
+                "say": (
+                    "I can freeze this into a builder handoff when you explicitly say "
+                    "'send to builder'."
+                ),
+            }
+
         try:
             handoff_md_path, handoff_json_path = await self.prompt_manager.freeze_to_handoff(
                 self.current_task_id
@@ -795,7 +1074,9 @@ class ToolHandler:
                 "frozen": True,
                 "handoff_md_path": str(handoff_md_path),
                 "handoff_json_path": str(handoff_json_path),
-                "summary": f"Prompt frozen and ready for builder. Files at {handoff_md_path.parent}",
+                "summary": (
+                    f"Prompt frozen and ready for builder. Files at {handoff_md_path.parent}"
+                ),
             }
 
         except FileNotFoundError as e:
@@ -877,6 +1158,380 @@ class ToolHandler:
             return match.group(1)
         return "unknown.md"
 
+    def _summarize_for_voice(self, text: str, max_lines: int = 2, max_chars: int = 220) -> str:
+        """Return a short, voice-friendly snippet from a longer reply."""
+        if not text.strip():
+            return ""
+
+        items: list[str] = []
+        in_code_block = False
+
+        for raw in text.splitlines():
+            line = raw.strip()
+            if not line:
+                continue
+
+            if line.startswith("```"):
+                in_code_block = not in_code_block
+                continue
+
+            if in_code_block:
+                continue
+
+            line = re.sub(r"^#+\s+", "", line)
+            line = re.sub(r"^[-*•]\s+", "", line)
+            line = re.sub(r"^\d+\.\s+", "", line)
+            line = re.sub(r"`([^`]*)`", r"\1", line)
+            line = re.sub(r"\*\*([^*]+)\*\*", r"\1", line)
+            line = re.sub(r"\*([^*]+)\*", r"\1", line)
+
+            items.append(line)
+            if len(items) >= max_lines:
+                break
+
+        summary = " ".join(items)
+        summary = re.sub(r"\s+", " ", summary).strip()
+        if len(summary) > max_chars:
+            summary = summary[: max_chars - 3].rstrip() + "..."
+        return summary
+
+    async def _rewrite_questions_for_voice(self, questions: list[SubagentQuestion]) -> None:
+        """Rewrite questions into voice-friendly phrasing.
+
+        This keeps the canonical question text for sending back to the subagent,
+        while allowing a shorter natural phrasing for speech.
+        """
+        if not questions:
+            return
+
+        prompt_lines = [
+            "Rewrite these questions for speaking.",
+            "- Keep the meaning exactly the same.",
+            "- Keep each question short and child-friendly when possible.",
+            '- Return JSON exactly like: {"questions": ["...", "..."]}',
+            "",
+        ]
+        for q in questions:
+            prompt_lines.append(f"{q.index}. {q.text}")
+
+        prompt = "\n".join(prompt_lines)
+
+        try:
+            response_text = ""
+            events = self.opencode.engage_subagent("summarizer", prompt)
+            if inspect.isawaitable(events):
+                events = await events
+
+            if not hasattr(events, "__aiter__"):
+                return
+
+            async for event in events:
+                if event.get("type") == "message":
+                    response_text = event.get("content", "")
+            if not response_text.strip():
+                return
+
+            parsed: dict[str, Any] | None = None
+            try:
+                parsed = json.loads(response_text)
+            except Exception:
+                match = re.search(r"\{.*\}", response_text, flags=re.DOTALL)
+                if match:
+                    try:
+                        parsed = json.loads(match.group(0))
+                    except Exception:
+                        parsed = None
+
+            spoken_questions: list[str] = []
+            if parsed and isinstance(parsed.get("questions"), list):
+                spoken_questions = [str(q).strip() for q in parsed["questions"]]
+            else:
+                # Fallback: accept newline separated output.
+                spoken_questions = [
+                    line.strip("- •\t ") for line in response_text.splitlines() if line.strip()
+                ]
+
+            if len(spoken_questions) < len(questions):
+                return
+
+            for idx, question in enumerate(questions):
+                spoken = spoken_questions[idx]
+                if spoken:
+                    question.spoken_text = spoken
+        except Exception:
+            # Never fail the main flow due to voice rewrite.
+            return
+
+    def _is_acknowledgment(self, text: str) -> bool:
+        """Return True if the user is acknowledging/confirming.
+
+        This is used for relay UX confirmations like:
+        - "Anything else to add?"
+        - "Anything else before I send?"
+
+        We keep it intentionally permissive, because voice recognition often
+        produces short acknowledgements.
+        """
+        cleaned = text.strip().lower()
+        if not cleaned:
+            return True
+
+        cleaned = re.sub(r"[^a-z0-9\s]", "", cleaned)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+
+        exact = {
+            "yes",
+            "yeah",
+            "yup",
+            "yep",
+            "ok",
+            "okay",
+            "sure",
+            "done",
+            "no",
+            "nope",
+            "send it",
+            "looks good",
+            "thats it",
+            "nothing else",
+            "all good",
+            "go ahead",
+        }
+        if cleaned in exact:
+            return True
+
+        # Common partials: treat short affirmations as acknowledgements, but avoid
+        # misclassifying longer utterances like "yes, I want to...".
+        tokens = cleaned.split()
+        if tokens and tokens[0] in {"yes", "yeah", "yup", "yep"}:
+            # Allow things like "yes" / "yes please".
+            if len(tokens) <= 2:
+                return True
+
+        if cleaned.startswith("no "):
+            if any(
+                phrase in cleaned
+                for phrase in (
+                    "thats it",
+                    "thats all",
+                    "nothing else",
+                    "all good",
+                    "thanks",
+                    "thank you",
+                )
+            ):
+                return True
+
+        if "send" in cleaned and "it" in cleaned:
+            return True
+        if "looks good" in cleaned or "all good" in cleaned:
+            return True
+        if "thats it" in cleaned:
+            return True
+        if "nothing" in cleaned and "else" in cleaned:
+            return True
+
+        return False
+
+    def _is_affirmative(self, text: str) -> bool:
+        cleaned = text.strip().lower()
+        cleaned = re.sub(r"[^a-z0-9\s]", "", cleaned)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        if not cleaned:
+            return False
+
+        return cleaned in {
+            "yes",
+            "yeah",
+            "yup",
+            "yep",
+            "sure",
+            "please",
+            "ok",
+            "okay",
+            "lets do it",
+            "let's do it",
+            "change it",
+            "edit",
+        } or cleaned.startswith("yes")
+
+    def _is_negative(self, text: str) -> bool:
+        cleaned = text.strip().lower()
+        cleaned = re.sub(r"[^a-z0-9\s]", "", cleaned)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        if not cleaned:
+            return False
+
+        return cleaned in {
+            "no",
+            "nope",
+            "nah",
+            "dont",
+            "don't",
+            "leave it",
+            "looks good",
+            "all good",
+            "thats it",
+            "that's it",
+            "nothing else",
+        } or cleaned.startswith("no")
+
+    def _parse_question_number(self, text: str) -> int | None:
+        cleaned = text.strip().lower()
+        cleaned = re.sub(r"[^a-z0-9\s]", "", cleaned)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        if not cleaned:
+            return None
+
+        match = re.search(r"\b(\d+)\b", cleaned)
+        if match:
+            try:
+                return int(match.group(1))
+            except ValueError:
+                return None
+
+        words = {
+            "one": 1,
+            "first": 1,
+            "two": 2,
+            "second": 2,
+            "three": 3,
+            "third": 3,
+            "four": 4,
+            "fourth": 4,
+            "five": 5,
+            "fifth": 5,
+            "six": 6,
+            "sixth": 6,
+            "seven": 7,
+            "seventh": 7,
+            "eight": 8,
+            "eighth": 8,
+            "nine": 9,
+            "ninth": 9,
+            "ten": 10,
+            "tenth": 10,
+        }
+        for token in cleaned.split():
+            if token in words:
+                return words[token]
+
+        return None
+
+    def _ordinal(self, number: int) -> str:
+        ordinals = {
+            1: "first",
+            2: "second",
+            3: "third",
+            4: "fourth",
+            5: "fifth",
+            6: "sixth",
+            7: "seventh",
+            8: "eighth",
+            9: "ninth",
+            10: "tenth",
+        }
+        return ordinals.get(number, str(number))
+
+    def _format_question_prompt(self, conv: SubagentConversationState, *, is_first: bool) -> str:
+        question = conv.get_current_question_message()
+        if is_first:
+            return f"{conv.get_intro_message()} First question: {question}"
+
+        ordinal = self._ordinal(conv.current_question_number)
+        return f"Okay, {ordinal} question: {question}"
+
+    async def _handle_final_review(
+        self,
+        conv: SubagentConversationState,
+        user_response: str,
+        *,
+        subagent: str,
+    ) -> dict[str, Any]:
+        # Editing flow: choose which question to update.
+        if conv.awaiting_edit_question_number:
+            number = self._parse_question_number(user_response)
+            if number is None or number < 1 or number > conv.total_questions:
+                return {
+                    "status": "awaiting_edit_question_number",
+                    "say": (
+                        "Which question number do you want to change? "
+                        f"One through {conv.total_questions}."
+                    ),
+                }
+
+            conv.pending_edit_question_number = number
+            conv.awaiting_edit_question_number = False
+            conv.awaiting_edit_answer = True
+            return {
+                "status": "awaiting_edit_answer",
+                "say": f"Okay. What's the updated answer for question {number}?",
+            }
+
+        # Editing flow: receive the updated answer.
+        if conv.awaiting_edit_answer:
+            number = conv.pending_edit_question_number
+            if number is None:
+                conv.awaiting_edit_answer = False
+                return {
+                    "status": "awaiting_confirmation",
+                    "say": f"Want to change anything before I send them to the {subagent}?",
+                }
+
+            conv.replace_answer(number, user_response.strip())
+            conv.awaiting_edit_answer = False
+            conv.pending_edit_question_number = None
+            return {
+                "status": "awaiting_confirmation",
+                "say": f"Got it. Any other changes before I send them to the {subagent}?",
+            }
+
+        # Yes/no decision: edit vs send.
+        if self._is_negative(user_response):
+            return await self.handle_confirm_send_to_subagent("")
+
+        if self._is_affirmative(user_response):
+            conv.awaiting_edit_question_number = True
+            return {
+                "status": "awaiting_edit_question_number",
+                "say": "Which question number do you want to change?",
+            }
+
+        return {
+            "status": "awaiting_confirmation",
+            "say": f"Want to change anything before I send them to the {subagent}?",
+        }
+
+    def _user_intends_builder(self) -> bool:
+        """Return True if the user's last utterance explicitly asked to build/code."""
+        transcript = (self.session_state.last_user_transcript or "").lower()
+        transcript = re.sub(r"\s+", " ", transcript).strip()
+
+        if not transcript:
+            return False
+
+        explicit_phrases = (
+            "send to builder",
+            "send this to the builder",
+            "dispatch to builder",
+            "start building",
+            "start coding",
+            "implement it",
+            "code it",
+            "go ahead and implement",
+            "go ahead and build",
+        )
+        if any(p in transcript for p in explicit_phrases):
+            return True
+
+        # "builder" alone is ambiguous; require a verb.
+        if "builder" in transcript and any(
+            v in transcript for v in ("send", "dispatch", "start", "run")
+        ):
+            return True
+
+        return False
+
     async def _update_memory_index(self, content: str, keywords: list[str]) -> None:
         """Update the memory keyword index.
 
@@ -956,7 +1611,7 @@ class ToolHandler:
             if re.search(pattern, command):
                 return (
                     False,
-                    f"Command contains blocked pattern. Use engage_planner for this operation.",
+                    "Command contains blocked pattern. Use engage_planner for this operation.",
                 )
 
         if operation == "query":
@@ -1067,33 +1722,327 @@ class ToolHandler:
     async def handle_engage_brainstormer(
         self, topic: str, context: str = "", constraints: list[str] | None = None
     ) -> dict[str, Any]:
-        """Engage brainstormer subagent for free-form ideation.
+        """Stage a brainstorm message, then confirm before sending.
 
-        Args:
-            topic: What to brainstorm or discuss
-            context: Relevant context for the discussion
-            constraints: Any constraints to keep in mind
-
-        Returns:
-            Brainstormer's response
+        Policy:
+        - Never send to subagents immediately on intent.
+        - Capture user thoughts first.
+        - Gemini asks for confirmation ("Anything else?" / "Want me to send?").
+        - Only after confirmation (or silence auto-confirm) do we relay to OpenCode.
         """
-        message = topic
-        if context:
-            message = f"{topic}\n\nContext: {context}"
-        if constraints:
-            message += f"\n\nConstraints to consider: {', '.join(constraints)}"
+        from .relay_draft import RelayDraft
+
+        # Clear any Q&A flow; brainstorm uses relay draft + threads.
+        self.session_state.clear_conversation()
+
+        spoken = (self.session_state.last_user_transcript or "").strip()
+        base = spoken if spoken and len(spoken) > len(topic) else topic
+
+        # Keep draft message minimal; context/constraints are already in the conversation.
+        # If you want to include them in the eventual relay, say them out loud.
+        draft = RelayDraft(target_subagent="brainstormer", topic=topic)
+
+        draft.message = base.strip() or topic.strip()
+
+        lowered = base.lower().replace("brainstorm", "")
+        tokens = re.findall(r"[a-z0-9']+", lowered)
+
+        filler = {
+            "lets",
+            "let's",
+            "let",
+            "about",
+            "the",
+            "a",
+            "an",
+            "my",
+            "our",
+            "app",
+            "project",
+        }
+        filler.update(re.findall(r"[a-z0-9']+", topic.lower()))
+
+        meaningful = [token for token in tokens if token and token not in filler]
+        has_list = base.count(",") >= 2 or "\n" in base
+        has_detail = (
+            (len(meaningful) >= 4 and len(base.strip()) >= 35)
+            or len(base.strip()) >= 80
+            or has_list
+        )
+
+        if has_detail:
+            draft.stage = "awaiting_confirmation"
+            self.session_state.active_draft = draft
+            return {
+                "status": "needs_confirmation",
+                "topic": topic,
+                "say": "Got it. Anything else to add before I send this to the brainstormer?",
+            }
+
+        self.session_state.active_draft = draft
+        return {
+            "status": "needs_detail",
+            "topic": topic,
+            "say": (
+                "Okay. Tell me what you want to brainstorm. When you're done, I'll ask if "
+                "you want me to send it."
+            ),
+        }
+
+    async def handle_continue_brainstormer(self, user_response: str) -> dict[str, Any]:
+        """Continue an active brainstormer session with multi-question iteration."""
+        conv = self.session_state.active_subagent_conversation
+
+        if conv is None:
+            draft = self.session_state.active_draft
+            if draft and draft.target_subagent == "brainstormer":
+                if draft.stage == "awaiting_detail":
+                    if self._is_acknowledgment(user_response):
+                        message = (draft.message.strip() or draft.topic.strip()).strip()
+                        self.session_state.active_draft = None
+                        if not message:
+                            return {
+                                "status": "needs_detail",
+                                "say": "What should we brainstorm about?",
+                            }
+                        return await self.handle_send_to_thread(
+                            message=message,
+                            create_new_thread=True,
+                            subagent=draft.target_subagent,
+                            topic=draft.topic,
+                            focus=True,
+                        )
+
+                    draft.message = (
+                        (draft.message + "\n" + user_response).strip()
+                        if draft.message
+                        else user_response.strip()
+                    )
+                    draft.stage = "awaiting_confirmation"
+                    draft.auto_confirm_sent = False
+                    return {
+                        "status": "awaiting_confirmation",
+                        "say": (
+                            "Got it. Anything else you want to add before I send this to the "
+                            "brainstormer?"
+                        ),
+                    }
+
+                if draft.stage == "awaiting_confirmation":
+                    if self._is_acknowledgment(user_response):
+                        message = (draft.message.strip() or draft.topic.strip()).strip()
+                        self.session_state.active_draft = None
+                        if not message:
+                            return {
+                                "status": "needs_detail",
+                                "say": "What should we brainstorm about?",
+                            }
+                        return await self.handle_send_to_thread(
+                            message=message,
+                            create_new_thread=True,
+                            subagent=draft.target_subagent,
+                            topic=draft.topic,
+                            focus=True,
+                        )
+
+                    draft.message = (draft.message + "\n" + user_response).strip()
+                    draft.auto_confirm_sent = False
+                    return {
+                        "status": "awaiting_confirmation",
+                        "say": (
+                            "Got it. Anything else you want to add before I send this to the "
+                            "brainstormer?"
+                        ),
+                    }
+
+            focused = self.session_state.get_focused_thread()
+            if focused and focused.subagent == "brainstormer":
+                return await self.handle_send_to_thread(
+                    message=user_response,
+                    thread_id=focused.thread_id,
+                    focus=True,
+                )
+
+            return {
+                "status": "error",
+                "error": "No active brainstormer session. Call engage_brainstormer first.",
+            }
+
+        if conv.subagent_name != "brainstormer":
+            return {
+                "status": "error",
+                "error": "Active session is not brainstormer.",
+            }
+
+        if conv.awaiting_send_confirmation:
+            return await self._handle_final_review(conv, user_response, subagent="brainstormer")
+
+        has_more = conv.record_answer(user_response.strip())
+        if has_more:
+            return {
+                "status": "needs_input",
+                "question_count": conv.total_questions,
+                "current_question": conv.current_question_number,
+                "total_questions": conv.total_questions,
+                "questions": [q.text for q in conv.questions],
+                "say": self._format_question_prompt(conv, is_first=False),
+            }
+
+        conv.start_send_confirmation()
+        return {
+            "status": "awaiting_confirmation",
+            "answers_collected": conv.total_questions,
+            "say": (
+                "I've got your answers. Want to change anything before I send them to the "
+                "brainstormer?"
+            ),
+        }
+
+    async def handle_confirm_send_to_subagent(self, additional_context: str = "") -> dict[str, Any]:
+        """Send collected answers to the active subagent as XML."""
+        conv = self.session_state.active_subagent_conversation
+        if not conv:
+            # Fallback: some flows use threads/drafts instead of Q&A.
+            draft = self.session_state.active_draft
+            if draft and draft.stage == "awaiting_confirmation":
+                message = (draft.message.strip() or draft.topic.strip()).strip()
+                if message:
+                    self.session_state.active_draft = None
+                    return await self.handle_send_to_thread(
+                        message=message,
+                        create_new_thread=True,
+                        subagent=draft.target_subagent,
+                        topic=draft.topic,
+                        focus=True,
+                    )
+
+            return {
+                "status": "error",
+                "error": "No active conversation to send. Engage a subagent first.",
+                "say": (
+                    "I don't have an active subagent Q and A session right now. "
+                    "If you want to send a brainstorm, tell me what you want to send "
+                    "and I'll relay it."
+                ),
+            }
+
+        if not conv.all_answers_collected:
+            return {
+                "status": "error",
+                "error": f"Not all questions answered yet. {conv.questions_remaining} remaining.",
+            }
+
+        # Leaving send-confirmation stage.
+        conv.awaiting_send_confirmation = False
+        conv.auto_confirm_sent = False
+
+        context_parts: list[str] = []
+        staged = conv.consume_send_context()
+        if staged:
+            context_parts.append(staged)
+        if additional_context.strip():
+            context_parts.append(additional_context.strip())
+
+        merged_context = "\n".join(context_parts).strip()
+
+        xml_payload = conv.format_answers_xml(merged_context)
+        subagent = conv.subagent_name
 
         responses: list[str] = []
 
-        async for event in self.opencode.engage_subagent("brainstormer", message):
+        # Prefer explicit session routing when available (threaded mode).
+        if conv.session_id:
+            events = self.opencode.send_to_session(conv.session_id, subagent, xml_payload)
+        else:
+            events = self.opencode.continue_session(subagent, xml_payload)
+
+        async for event in events:
             content = event.get("content", "")
+            if subagent == "planner" and "READY_FOR_BUILDER:" in content:
+                filename = self._extract_filename(content)
+                self.planner_session_active = False
+                self.session_state.clear_conversation()
+                return {
+                    "status": "ready",
+                    "plan_file": filename,
+                    "say": "The plan is ready for the builder.",
+                }
+
             if event.get("type") == "message":
                 responses.append(content)
 
-        if responses:
-            return {"response": responses[-1]}
+        full_response = responses[-1] if responses else ""
+        questions = QuestionParser.parse_questions(full_response)
+        if questions:
+            await self._rewrite_questions_for_voice(questions)
+            conv.reset_for_new_questions(questions)
+            return {
+                "status": "needs_input",
+                "subagent": subagent,
+                "question_count": len(questions),
+                "current_question": 1,
+                "total_questions": len(questions),
+                "questions": [q.text for q in questions],
+                "say": self._format_question_prompt(conv, is_first=True),
+            }
 
-        return {"response": "Let's think about this..."}
+        # No more questions - conversation complete
+        self.session_state.clear_conversation()
+        if subagent == "planner":
+            self.planner_session_active = False
+
+        return {
+            "status": "complete",
+            "response": full_response,
+            "say": full_response[:500] if full_response else "Done.",
+        }
+
+    async def handle_engage_with_project(
+        self,
+        subagent: str,
+        topic: str,
+        project: str = "",
+        project_hint: str = "",
+        context: str = "",
+    ) -> dict[str, Any]:
+        """Select project (fuzzy) + engage subagent in one action."""
+        project_query = project_hint or project
+        if not project_query.strip():
+            return {"status": "error", "error": "Missing project name."}
+
+        project_result = await self.handle_select_project(project_query)
+
+        if project_result.get("status") == "needs_clarification":
+            return {
+                **project_result,
+                "say": project_result.get("say", "I found multiple matching projects."),
+            }
+
+        if project_result.get("error"):
+            return {
+                **project_result,
+                "say": project_result.get(
+                    "say", project_result.get("error", "Failed to select project.")
+                ),
+            }
+
+        project_name = project_result.get("project_name", "the project")
+
+        if subagent == "planner":
+            result = await self.handle_engage_planner(topic, context)
+        elif subagent == "brainstormer":
+            result = await self.handle_engage_brainstormer(topic, context)
+        else:
+            return {"status": "error", "error": f"Unknown subagent: {subagent}"}
+
+        # Prefix voice output.
+        say = result.get("say") or result.get("summary") or ""
+        if say:
+            result["say"] = f"Connected to {project_name}. {say}".strip()
+        else:
+            result["say"] = f"Connected to {project_name}."
+
+        return result
 
     async def handle_get_builder_plan(self, task_id: str) -> dict[str, Any]:
         """Get the plan response from a builder in plan mode.
@@ -1134,7 +2083,9 @@ class ToolHandler:
                 }
 
         return {
-            "error": f"No plan found for task {task_id}. Make sure to dispatch with mode='plan' first.",
+            "error": (
+                f"No plan found for task {task_id}. Make sure to dispatch with mode='plan' first."
+            ),
             "task_id": task_id,
         }
 
@@ -1167,6 +2118,321 @@ class ToolHandler:
                     }
 
         return {
-            "error": f"No pending plan found for task {task_id}. Get the plan first with get_builder_plan.",
+            "error": (
+                f"No pending plan found for task {task_id}. Get the plan first with "
+                "get_builder_plan."
+            ),
             "task_id": task_id,
+        }
+
+    # === Threaded Subagent Sessions (multi-session relay) ===
+
+    async def handle_start_subagent_thread(
+        self,
+        subagent: str,
+        topic: str = "",
+        focus: bool = True,
+    ) -> dict[str, Any]:
+        """Create a new OpenCode session for a subagent.
+
+        Returns quickly; sending messages is done via send_to_thread.
+        """
+        title = f"Conversator: {subagent}"
+        session_id = await self.opencode.create_session(title=title)
+        thread = self.session_state.create_thread(
+            subagent=subagent, topic=topic, session_id=session_id, focus=focus
+        )
+
+        return {
+            "status": "started",
+            "thread_id": thread.thread_id,
+            "session_id": thread.opencode_session_id,
+            "subagent": thread.subagent,
+            "topic": thread.topic,
+            "focused": self.session_state.focused_thread_id == thread.thread_id,
+            "say": f"Started a new {subagent} session.".strip(),
+        }
+
+    async def handle_list_threads(self) -> dict[str, Any]:
+        """List all active threads (fresh per run)."""
+        threads = []
+        for thread_id, thread in self.session_state.threads.items():
+            threads.append(
+                {
+                    "thread_id": thread_id,
+                    "session_id": thread.opencode_session_id,
+                    "subagent": thread.subagent,
+                    "topic": thread.topic,
+                    "status": thread.status,
+                    "focused": self.session_state.focused_thread_id == thread_id,
+                }
+            )
+
+        return {
+            "count": len(threads),
+            "focused_thread_id": self.session_state.focused_thread_id,
+            "threads": threads,
+        }
+
+    async def handle_focus_thread(self, thread_id: str) -> dict[str, Any]:
+        """Switch focus to an existing thread."""
+        thread = self.session_state.get_thread(thread_id)
+        if not thread:
+            return {"status": "error", "error": f"Unknown thread_id: {thread_id}"}
+
+        self.session_state.focus_thread(thread_id)
+        return {
+            "status": "focused",
+            "thread_id": thread.thread_id,
+            "session_id": thread.opencode_session_id,
+            "subagent": thread.subagent,
+            "topic": thread.topic,
+            "say": f"Switched to {thread.subagent} thread.".strip(),
+        }
+
+    async def handle_send_to_thread(
+        self,
+        message: str,
+        thread_id: str | None = None,
+        subagent: str | None = None,
+        topic: str = "",
+        create_new_thread: bool = False,
+        focus: bool = True,
+    ) -> dict[str, Any]:
+        """Send a message to a specific thread (or the focused one).
+
+        This is non-blocking: it schedules a background task and returns immediately.
+        """
+        thread = None
+        if thread_id:
+            thread = self.session_state.get_thread(thread_id)
+        else:
+            thread = self.session_state.get_focused_thread()
+
+        if create_new_thread or thread is None:
+            if not subagent:
+                return {
+                    "status": "error",
+                    "error": (
+                        "No thread selected. Provide subagent (and optionally topic) to "
+                        "create a new thread."
+                    ),
+                }
+            title = f"Conversator: {subagent}"
+            session_id = await self.opencode.create_session(title=title)
+            thread = self.session_state.create_thread(
+                subagent=subagent,
+                topic=topic,
+                session_id=session_id,
+                focus=focus,
+            )
+
+        assert thread is not None
+
+        print(
+            f"[ThreadDispatch] thread={thread.thread_id[:8]} subagent={thread.subagent} "
+            f"session={thread.opencode_session_id[:8]}..."
+        )
+
+        thread.last_user_message = message
+        thread.status = "waiting_response"
+        thread.updated_at = datetime.utcnow()
+        self.session_state.set_thread_waiting(thread.thread_id, True)
+
+        # Waiting music policy:
+        # - Tool-driven dispatch: Gemini will speak `say` ("Okay. Sending...") in the same turn.
+        # - Internal dispatch (relay draft auto-send): gemini_live.py queues the same phrase.
+        # Once we dispatch, it is safe to start music after the next safe point.
+        self.session_state.waiting_music_preamble_queued = True
+        self.session_state.waiting_music_preamble_delivered = True
+
+        task = asyncio.create_task(self._run_thread_request(thread.thread_id, message))
+        self.session_state.track_task(task)
+
+        return {
+            "status": "queued",
+            "thread_id": thread.thread_id,
+            "session_id": thread.opencode_session_id,
+            "subagent": thread.subagent,
+            "topic": thread.topic,
+            "say": f"Okay. Sending that to the {thread.subagent}.",
+        }
+
+    async def _run_thread_request(self, thread_id: str, message: str) -> None:
+        thread = self.session_state.get_thread(thread_id)
+        if not thread:
+            return
+
+        try:
+            responses: list[str] = []
+            errors: list[str] = []
+
+            async for event in self.opencode.send_to_session(
+                thread.opencode_session_id, thread.subagent, message
+            ):
+                if event.get("type") == "message":
+                    responses.append(event.get("content", ""))
+                elif event.get("type") == "error":
+                    errors.append(event.get("content", ""))
+
+            if errors and not responses:
+                thread.status = "error"
+                thread.last_error = errors[-1]
+                self.session_state.set_thread_waiting(thread.thread_id, False)
+                self.session_state.enqueue_announcement(
+                    f"The {thread.subagent} hit an error: {thread.last_error}",
+                    kind="error",
+                    thread_id=thread.thread_id,
+                )
+                return
+
+            full_response = responses[-1] if responses else ""
+            thread.last_response = full_response
+            thread.status = "has_response"
+            thread.updated_at = datetime.utcnow()
+
+            print(
+                f"[ThreadResponse] thread={thread.thread_id[:8]} subagent={thread.subagent} "
+                "complete"
+            )
+
+            # Stop waiting (music will stop when no threads are waiting).
+            self.session_state.set_thread_waiting(thread.thread_id, False)
+
+            questions = QuestionParser.parse_questions(full_response)
+            qcount = len(questions)
+
+            inbox_available = self.state is not None
+            active_conv = self.session_state.active_subagent_conversation
+            is_focused = self.session_state.focused_thread_id == thread.thread_id
+            is_only_thread = len(self.session_state.threads) == 1
+            auto_relay = active_conv is None and (is_focused or is_only_thread)
+
+            if self.state:
+                from .models import InboxItem
+
+                summary = f"{thread.subagent} replied"
+                if thread.topic:
+                    summary += f" about {thread.topic}"
+                if qcount:
+                    summary += f" ({qcount} questions)"
+
+                self.state.add_inbox_item(
+                    InboxItem(
+                        summary=summary,
+                        severity="info",
+                        refs={
+                            "thread_id": thread.thread_id,
+                            "session_id": thread.opencode_session_id,
+                            "subagent": thread.subagent,
+                            "topic": thread.topic,
+                            "question_count": qcount,
+                        },
+                        acknowledged_at=datetime.utcnow() if auto_relay else None,
+                    )
+                )
+
+            inbox_suffix = " It's in your inbox." if inbox_available else ""
+
+            if qcount and auto_relay:
+                await self._rewrite_questions_for_voice(questions)
+
+                # Foreground behavior: start the Q&A loop immediately.
+                self.session_state.focus_thread(thread.thread_id)
+                thread.status = "awaiting_user"
+                thread.updated_at = datetime.utcnow()
+
+                self.session_state.active_subagent_conversation = SubagentConversationState(
+                    subagent_name=thread.subagent,
+                    session_id=thread.opencode_session_id,
+                    questions=questions,
+                )
+                conv = self.session_state.active_subagent_conversation
+                announce = (
+                    self._format_question_prompt(conv, is_first=True) if conv else questions[0].text
+                )
+            else:
+                if qcount:
+                    announce = f"The {thread.subagent} replied ({qcount} questions).{inbox_suffix}"
+                else:
+                    snippet = ""
+                    if thread.subagent == "brainstormer":
+                        snippet = self._summarize_for_voice(full_response)
+
+                    if snippet:
+                        if auto_relay:
+                            announce = f"The {thread.subagent} replied: {snippet}."
+                        else:
+                            announce = f"The {thread.subagent} replied: {snippet}.{inbox_suffix}"
+                    else:
+                        if auto_relay:
+                            announce = f"The {thread.subagent} replied."
+                        else:
+                            announce = f"The {thread.subagent} replied.{inbox_suffix}"
+
+            self.session_state.enqueue_announcement(
+                announce,
+                kind="response_ready",
+                thread_id=thread.thread_id,
+            )
+
+        except Exception as e:
+            thread.status = "error"
+            thread.last_error = str(e)
+            self.session_state.set_thread_waiting(thread.thread_id, False)
+            self.session_state.enqueue_announcement(
+                f"The {thread.subagent} hit an error: {thread.last_error}",
+                kind="error",
+                thread_id=thread.thread_id,
+            )
+
+    async def handle_open_thread(self, thread_id: str) -> dict[str, Any]:
+        """Open a thread and relay its latest response/questions."""
+        thread = self.session_state.get_thread(thread_id)
+        if not thread:
+            return {"status": "error", "error": f"Unknown thread_id: {thread_id}"}
+
+        self.session_state.focus_thread(thread.thread_id)
+
+        if not thread.last_response:
+            return {
+                "status": "error",
+                "error": "Thread has no response yet.",
+                "thread_id": thread.thread_id,
+            }
+
+        questions = QuestionParser.parse_questions(thread.last_response)
+        if questions:
+            await self._rewrite_questions_for_voice(questions)
+
+            thread.status = "awaiting_user"
+            thread.updated_at = datetime.utcnow()
+
+            self.session_state.active_subagent_conversation = SubagentConversationState(
+                subagent_name=thread.subagent,
+                session_id=thread.opencode_session_id,
+                questions=questions,
+            )
+            conv = self.session_state.active_subagent_conversation
+
+            return {
+                "status": "needs_input",
+                "thread_id": thread.thread_id,
+                "subagent": thread.subagent,
+                "question_count": len(questions),
+                "current_question": 1,
+                "total_questions": len(questions),
+                "questions": [q.text for q in questions],
+                "say": self._format_question_prompt(conv, is_first=True)
+                if conv
+                else questions[0].text,
+            }
+
+        # No questions - give a short relay summary.
+        return {
+            "status": "complete",
+            "thread_id": thread.thread_id,
+            "subagent": thread.subagent,
+            "response": thread.last_response,
+            "say": thread.last_response[:600],
         }

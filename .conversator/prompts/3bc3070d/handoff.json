@@ -1,0 +1,23 @@
+{
+  "goal": "Brainstorm a simple calculator app for kids with a specific theme.",
+  "definition_of_done": [
+    "Simple calculator for kids",
+    "Bubblegum front-end theme",
+    "Bubblegum machine as the calculator interface"
+  ],
+  "constraints": [
+    "Respect existing style and architecture.",
+    "Do not modify secrets (.env, tokens). Redact if encountered.",
+    "Ask before running commands or making destructive changes."
+  ],
+  "repo_targets": [],
+  "required_artifacts": [
+    "diff summary",
+    "test output"
+  ],
+  "gates_required": [
+    "write_gate",
+    "run_gate"
+  ],
+  "budgets": {}
+}

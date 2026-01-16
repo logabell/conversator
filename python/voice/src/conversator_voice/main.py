@@ -274,6 +274,10 @@ async def run_conversator(
                     name="response_process_loop",
                 ),
                 asyncio.create_task(
+                    _relay_safe_point_loop(voice, session),
+                    name="relay_safe_point_loop",
+                ),
+                asyncio.create_task(
                     dashboard_server.serve(),
                     name="dashboard_server",
                 ),
@@ -427,14 +431,30 @@ async def _audio_send_loop(voice, session: ConversatorSession, config: Conversat
             except Exception as e:
                 consecutive_errors += 1
                 print(f"Error sending audio chunk #{chunk_count}: {e}")
+
+                # Connection drops can happen mid-session. Do not exit the audio loop
+                # (that would stop mic forwarding permanently). Instead, back off and
+                # let the response loop reconnect (or trigger a reconnect ourselves).
+                if not session.conversator._connected or session.conversator.session is None:
+                    if session.conversator.can_reconnect:
+                        try:
+                            await session.conversator.reconnect()
+                        except Exception:
+                            pass
+                    await asyncio.sleep(0.2)
+                    consecutive_errors = 0
+                    continue
+
                 if consecutive_errors >= 5:
                     print(
-                        f"[Audio loop] Too many consecutive errors ({consecutive_errors}), breaking"
+                        f"[Audio loop] Too many consecutive errors ({consecutive_errors}); backing off"
                     )
                     import traceback
 
                     traceback.print_exc()
-                    break
+                    await asyncio.sleep(1.0)
+                    consecutive_errors = 0
+                    continue
     except Exception as e:
         print(f"[Audio loop] Fatal error in audio send loop: {e}")
         import traceback
@@ -442,6 +462,71 @@ async def _audio_send_loop(voice, session: ConversatorSession, config: Conversat
         traceback.print_exc()
     finally:
         print(f"[Audio loop] Ended after {chunk_count} chunks")
+
+
+async def _relay_safe_point_loop(voice, session: ConversatorSession) -> None:
+    """Deliver queued announcements and manage waiting music.
+
+    Policy: only announce at safe points (after TURN_COMPLETE, no playback, no
+    tool call, no model generation).
+    """
+    import time
+
+    while True:
+        try:
+            await asyncio.sleep(0.1)
+
+            # Tool handler/session state may not be ready during startup.
+            tool_handler = getattr(session, "tool_handler", None)
+            if tool_handler is None:
+                continue
+
+            state = tool_handler.session_state
+
+            if not session.conversator._connected or session.conversator.session is None:
+                continue
+
+            if session.conversator._is_generating or session.conversator._in_tool_call:
+                continue
+
+            if hasattr(voice, "is_playback_complete") and not voice.is_playback_complete():
+                continue
+
+            last_turn_complete = getattr(session.conversator, "_last_turn_complete_time", 0.0)
+            if last_turn_complete <= 0:
+                continue
+
+            # Tiny debounce after turn completion.
+            if time.time() - last_turn_complete < 0.2:
+                continue
+
+            ambient = getattr(session.conversator, "ambient_audio", None)
+
+            # Deliver at most one announcement per tick.
+            pending = state.pop_announcement() if hasattr(state, "pop_announcement") else None
+            if pending:
+                if ambient and getattr(ambient, "is_playing", False):
+                    await ambient.stop_work_music()
+
+                await session.conversator.announce(pending.text, priority="immediate")
+
+                if pending.kind == "wait_started":
+                    state.waiting_music_preamble_delivered = True
+                continue
+
+            # Manage waiting music (after preamble has been queued/spoken).
+            if ambient:
+                if state.waiting_thread_ids:
+                    if state.waiting_music_preamble_delivered and not ambient.is_playing:
+                        await ambient.start_work_music()
+                else:
+                    if ambient.is_playing:
+                        await ambient.stop_work_music()
+
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            print(f"[RelaySafePoint] Error: {e}")
 
 
 async def _response_process_loop(voice, session: ConversatorSession) -> None:
@@ -482,6 +567,11 @@ async def _response_process_loop(voice, session: ConversatorSession) -> None:
                 completed = await voice.wait_for_playback_complete(timeout=10.0)
                 if not completed:
                     print("[Warning: Playback timeout - continuing anyway]")
+
+            # Relay backstop: if Gemini didn't route obvious intents via tools,
+            # automatically stage/dispatch a relay draft.
+            if hasattr(session.conversator, "maybe_auto_route_last_turn"):
+                await session.conversator.maybe_auto_route_last_turn()
 
             # After turn completes, continue listening for next turn
             print(f"[=== Turn #{turn_count} complete - restarting for next turn ===]")

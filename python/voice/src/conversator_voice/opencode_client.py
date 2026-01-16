@@ -119,6 +119,41 @@ class OpenCodeClient:
         async for event in self._send_and_poll(session_id=session_id, agent=agent, message=message):
             yield event
 
+    async def create_session(self, title: str) -> str:
+        """Create a new OpenCode session and return its id.
+
+        This is a small public wrapper used by the threaded subagent relay.
+        """
+        if not await self.health_check():
+            raise RuntimeError(
+                f"OpenCode not available at {self.base_url}. Make sure it is running with 'opencode serve'."
+            )
+
+        return await self._create_session(title=title)
+
+    async def send_to_session(
+        self, session_id: str, agent: str, message: str
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Send a prompt to an existing session and poll for the response."""
+        if not await self.health_check():
+            yield {
+                "type": "error",
+                "content": (
+                    f"OpenCode not available at {self.base_url}. Make sure it is running with 'opencode serve'."
+                ),
+            }
+            return
+
+        await self._emit_activity(
+            agent,
+            "started",
+            f"Sending to {agent}",
+            message[:200] + "..." if len(message) > 200 else message,
+        )
+
+        async for event in self._send_and_poll(session_id=session_id, agent=agent, message=message):
+            yield event
+
     async def _create_session(self, title: str) -> str:
         response = await self.client.post(f"{self.base_url}/session", json={"title": title})
         response.raise_for_status()
