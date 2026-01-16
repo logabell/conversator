@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
 PID_FILE="${PROJECT_ROOT}/.conversator/cache/conversator.pid"
-PORT="${CONVERSATOR_PORT:-4096}"
+PORT="${CONVERSATOR_PORT:-4158}"
 
 if [ -f "$PID_FILE" ]; then
     PID=$(cat "$PID_FILE")
@@ -54,5 +54,5 @@ if [ -f "$PID_FILE" ]; then
     fi
 else
     echo "No PID file found. Conversator may not be running."
-    echo "Try: pkill -f 'opencode serve'"
+    echo "If port $PORT is in use, check what's listening before stopping anything."
 fi

@@ -19,7 +19,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .relay_draft import RelayDraft
-from .subagent_conversation import SubagentConversationState
 from .subagent_threads import AnnouncementKind, PendingAnnouncement, SubagentThread
 
 if TYPE_CHECKING:
@@ -40,7 +39,6 @@ class SessionState:
 
     session_started: bool = False
 
-    active_subagent_conversation: SubagentConversationState | None = None
     active_draft: RelayDraft | None = None
 
     last_user_speech_time: float = 0.0
@@ -62,8 +60,7 @@ class SessionState:
         return self.current_project is not None and self.current_project_path is not None
 
     def clear_conversation(self) -> None:
-        """Clear any active subagent Q&A and relay drafts."""
-        self.active_subagent_conversation = None
+        """Clear any active relay drafts."""
         self.active_draft = None
 
     def create_thread(

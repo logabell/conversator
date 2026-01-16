@@ -4,10 +4,10 @@ version: "1"
 root_project_dir: /home/logabell/projects
 
 # Conversator layer (subagents for planning/refinement)
-# Uses OpenCode HTTP Serve API on port 4096
+# Uses OpenCode HTTP Serve API on port 4158
 # Instance isolation: Uses OPENCODE_CONFIG_DIR to avoid conflicting with user's .opencode/
 conversator:
-  port: 4096
+  port: 4158
   # Version-controlled agent source (edit these to iterate on agents)
   agents_source: conversator/agents
   # Runtime location (copied from source at startup, gitignored)
@@ -35,7 +35,7 @@ builders:
   # Generic OpenCode builder (user's external instance for development)
   opencode:
     type: opencode
-    port: 8001
+    port: 4096
     worktree_prefix: oc-wt-
 
 # Automatic routing rules (when user doesn't specify)

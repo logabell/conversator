@@ -112,7 +112,7 @@ async def run_conversator(
                 "The subagents (planner, context-reader, etc.) are REQUIRED for Conversator to function."
             )
             print("\nPossible solutions:")
-            print("  1. Check if port 4096 is already in use: lsof -i :4096")
+            print(f"  1. Check if port {opencode_port} is already in use: lsof -i :{opencode_port}")
             print("  2. Check OpenCode installation: which opencode")
             print("  3. Check logs in .conversator/cache/")
             print("  4. Try running manually: scripts/start-conversator.sh")

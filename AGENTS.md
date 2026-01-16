@@ -1,154 +1,139 @@
 # AGENTS.md (Conversator)
-
 Guidance for agentic coding tools working in this repository.
 Scope: repo root (applies to everything unless a nested `AGENTS.md` overrides it).
 
 ## Repo Map
-
 - Python voice backend + orchestration: `python/voice/src/conversator_voice/`
 - Python tests: `python/voice/tests/`
 - Dashboard UI (Vite + React + TS): `python/voice/dashboard-ui/`
 - Versioned OpenCode subagent prompts: `conversator/agents/`
 - Runtime state (mostly gitignored): `.conversator/`
+- Workspace scripts: `scripts/`
 - Specs / PRD pack: `plans/detailed/docs/`
 
 ## Cursor / Copilot Rules
-
 - Cursor: no `.cursor/rules/` or `.cursorrules` found.
 - Copilot: no `.github/copilot-instructions.md` found.
-
 If these appear later, treat them as higher-priority editor/agent rules.
 
-## Build / Lint / Test
+## Agent Defaults (important)
+- Prefer minimal, surgical diffs; avoid drive-by refactors.
+- Don’t introduce new deps/frameworks unless asked.
+- If you touch files in a subdirectory, check for nested `AGENTS.md` rules.
+- Don’t commit, push, or open PRs unless explicitly requested.
+- Don’t edit or commit runtime state under `.conversator/` unless the task requires it.
+
+## Project Documentation / Core Objectives
+- Source of truth lives in `.documentation/`.
+- Product goals + core objectives: `.documentation/00-conversator-prd-v1.md`, `.documentation/01-requirements.md`.
+- High-level overview: `.documentation/00-overview.md`, `.documentation/02-conversator-overview.md`.
+- Architecture + state model: `.documentation/03-architecture.md`, `.documentation/04-task-session-state.md`, `.documentation/event-types.md`.
+- Security/permissions + validation phases: `.documentation/08-security-permissions.md`, `.documentation/12-phases-and-validation.md`.
+- Workspace layout: `.documentation/11-workspace-layout.md`.
+
+## Quick Start
+```bash
+./scripts/init-workspace.sh
+# OpenCode orchestration layer (Layer 2, default :4158)
+./scripts/start-conversator.sh
+# Builder layer (Layer 3, default OpenCode server :4096)
+# (Optional helper: starts a standard OpenCode server if not already running)
+./scripts/start-builders.sh
+# Voice + dashboard API (default dashboard port :8080)
+cd python/voice
+export GOOGLE_API_KEY=...
+conversator-voice --source local
+# or: python -m conversator_voice --source local
+# Dashboard UI (dev)
+cd python/voice/dashboard-ui
+npm ci
+npm run dev
+```
+Stop helpers:
+- `./scripts/stop-conversator.sh`
+- `./scripts/stop-builders.sh`
+
+## Build / Lint
 
 ### Python (voice backend)
-
 ```bash
 cd python/voice
-
-# Dev install (includes pytest/ruff)
 pip install -e ".[dev]"
-
-# Lint + import sorting (ruff)
 ruff check src/ tests/
 ruff check --fix src/ tests/
-
-# Format (ruff formatter)
 ruff format src/ tests/
-
-# Tests
-pytest -q
-
-# Single file
-pytest -q tests/test_prompt_manager.py
-
-# Single test (node id)
-pytest -q tests/test_prompt_manager.py::TestPromptManager::test_freeze_to_handoff_creates_both_files
-
-# Filter
-pytest -q -k prompt_manager
-
-# Skip slow tests
-pytest -q -m "not slow"
 ```
-
-External/integration tests:
-
-- OpenCode integration: needs OpenCode server at `http://localhost:4096`.
-  - Start: `./scripts/start-conversator.sh`
-  - Run: `cd python/voice && pytest -v tests/test_opencode_integration.py`
-  - Skip: `SKIP_OPENCODE_TESTS=1`
-- Gemini Live: needs `GOOGLE_API_KEY`.
-  - Run: `cd python/voice && export GOOGLE_API_KEY=... && pytest -v tests/test_gemini_live.py`
-- E2E workflow: needs `GOOGLE_API_KEY` and (typically) OpenCode.
-  - Run: `cd python/voice && export GOOGLE_API_KEY=... && pytest -v tests/test_e2e_workflow.py`
 
 ### Dashboard UI (Vite + TypeScript)
-
 ```bash
 cd python/voice/dashboard-ui
-
 npm ci
 npm run dev      # http://localhost:5173
-npm run build    # tsc + vite build
+npm run build    # tsc + vite build (typecheck gate)
 npm run preview
 ```
-
 Notes:
-- Dev proxy routes `/api` and `/ws` to `http://localhost:8080` (`python/voice/dashboard-ui/vite.config.ts`).
+- Dev proxy is configured in `python/voice/dashboard-ui/vite.config.ts`.
 - Production build emits to `python/voice/src/conversator_voice/dashboard/static`.
+
+## Services / Ports (defaults)
+- OpenCode orchestration (Layer 2): `http://localhost:4158` (health via `/agent`)
+- Builder OpenCode server (Layer 3): `http://localhost:4096` (health via `/agent`)
+- Dashboard API + WS server: `http://localhost:8080` (health via `/health`, WS `ws://localhost:8080/ws/events`)
+- Vite dev server: `http://localhost:5173` (proxies `/api` + `/ws` to :8080)
+
+## Config / State
+- Main config file: `.conversator/config.yaml` (created/managed by `./scripts/init-workspace.sh`).
+- Key defaults: `conversator.port=4158`, builder OpenCode `:4096`, dashboard API `:8080`.
+- Builder definitions live under `builders:` in the config.
+- `.conversator/opencode/` isolates OpenCode config; scripts may symlink auth/config from user `~/.opencode/`.
+- OpenCode server API spec is available at `.documentation/opencode_api.json`.
+- Treat `.conversator/` as runtime state; don’t commit changes unless explicitly requested.
 
 ## Code Style and Conventions
 
 ### General
-
-- Prefer minimal, surgical diffs; keep changes scoped to the request.
-- Keep runtime state and generated artifacts out of commits.
-- When in doubt, follow nearby patterns in the same package.
+- Keep changes scoped to the request; match surrounding conventions.
+- Prefer explicit, actionable error messages.
+- Avoid silent failures; ensure errors carry enough context to debug.
 
 ### Python (`python/voice/src/conversator_voice/`)
-
-Language + tooling:
-- Python `>=3.11` (`str | None`, `list[str]`, `dict[str, Any]`).
-- Lint/format with `ruff` (`line-length = 100`, `target-version = py311`, rules `E,F,I,UP`).
-
+Tooling:
+- Ruff is the source of truth (`python/voice/pyproject.toml`): `line-length = 100`, `target-version = py311`, rules `E,F,I,UP`.
 Imports:
 - 3 blocks with a blank line between: standard library, third-party, local.
-- Use absolute imports within the package (`from conversator_voice...`) or relative (`from .foo import Bar`) consistently within a file.
-
+- Prefer `ruff check --fix` to keep ordering consistent.
 Formatting + naming:
 - 4-space indentation; docstrings for modules/classes/public functions.
-- Naming: `snake_case` for functions/vars, `PascalCase` for classes, `UPPER_CASE` for constants.
-- Prefer `Path` over stringly paths; keep filesystem writes explicit and localized.
-
-Typing:
-- Avoid `Any` at boundaries when possible; prefer `unknown`-like patterns via narrowing (e.g., `dict[str, Any]` only at serialization edges).
-- Use `Literal[...]` for stringly enums (see `TaskStatus`, `EventType` in `models.py`).
-- Prefer `dataclasses` for plain data containers (common pattern in `models.py`).
-
+- `snake_case` functions/vars, `PascalCase` classes/types, `UPPER_CASE` constants.
+Types:
+- Avoid `Any` except at serialization edges.
+- Prefer `Literal[...]` enums and keep values aligned with `python/voice/src/conversator_voice/models.py`.
+- Prefer `dataclasses` for plain data containers.
 Async + subprocess:
-- Use `async def` for network/file I/O; avoid blocking calls in the event loop.
-- Prefer `subprocess.run(["cmd", "arg"], timeout=..., capture_output=True, text=True)`.
-- Avoid `shell=True` unless absolutely necessary; if used, validate/sanitize inputs.
-
+- Prefer `async def` for I/O; avoid blocking calls in the event loop; add explicit timeouts.
+- Prefer `subprocess.run(["cmd"], timeout=..., capture_output=True, text=True)`; avoid `shell=True`.
 Error handling:
+- Don’t swallow exceptions; include context.
 - Tool handlers should return structured errors: `ToolResponse(result={"error": "..."})`.
-- Don’t swallow exceptions silently; if a failure is non-fatal, explain why and keep enough context to debug.
-
-Domain invariants (keep aligned):
+Domain invariants:
 - State is event-sourced: append events first, derive state second (`StateStore`).
-- Keep status/event strings aligned with `models.py` Literals.
-- Prompt refinement uses a single mutable `working.md` and freezes to `handoff.md` + `handoff.json` on explicit user confirmation.
-
-Tests:
-- Use `pytest` + `pytest-asyncio`; async tests typically use `@pytest.mark.asyncio`.
-- Prefer small, deterministic unit tests; mark slow/external tests with `@pytest.mark.slow` and guard with env-based skips.
+- Keep `working.md` mutable and only freeze to `handoff.md` + `handoff.json` on explicit confirmation.
 
 ### TypeScript / React (`python/voice/dashboard-ui/`)
-
 Tooling:
-- TypeScript is `strict: true` with `noUnusedLocals/noUnusedParameters`.
-- No dedicated lint script; `npm run build` is the typecheck gate.
-
+- TS `strict: true`, `noUnusedLocals/noUnusedParameters` (typecheck gate is `npm run build`).
 Formatting + naming:
-- Match existing formatting: semicolons, single quotes, trailing commas, 2-space indent.
-- Naming: `camelCase` for values/functions, `PascalCase` for components/types.
-
-Types + data safety:
-- Avoid `any`; use `unknown` for untrusted data and narrow it.
-- Keep API types centralized (see `python/voice/dashboard-ui/src/api/client.ts`).
-
-Networking + errors:
-- Use the fetch helpers in `python/voice/dashboard-ui/src/api/client.ts`.
-- Always check `res.ok` and throw a useful `Error` on failure.
-
-State + React patterns:
-- Prefer functional components + hooks.
-- Centralize state updates in the Zustand store (`python/voice/dashboard-ui/src/stores/`).
+- 2-space indent, semicolons, single quotes, trailing commas.
+- `camelCase` values/functions, `PascalCase` components/types.
+Types + API shapes:
+- Avoid `any`; use `unknown` and narrow.
+- Keep API shapes and helpers centralized in `python/voice/dashboard-ui/src/api/client.ts`.
+Networking + state:
+- Always check `res.ok` and throw useful errors; prefer shared fetch helpers.
+- Prefer hooks + functional components; centralize state in Zustand stores under `python/voice/dashboard-ui/src/stores/`.
 
 ## Repo Hygiene (important)
-
-- `.conversator/` is primarily runtime state; most of it is gitignored.
-  - Avoid committing: `.conversator/cache/`, `.conversator/state.sqlite*`, `.conversator/opencode/`, prompt `working.md` files.
-- Do not commit secrets (`.env`, API keys, auth tokens).
-- `python/voice/dashboard-ui/node_modules/` should not be committed (if it shows up in `git status`, do not add it).
+- Don’t commit runtime/derived artifacts under `.conversator/` (esp `.conversator/cache/`, `.conversator/state.sqlite*`, `.conversator/opencode/`, prompt `working.md`).
+- Don’t commit secrets (`.env`, API keys, auth tokens).
+- Don’t commit `python/voice/dashboard-ui/node_modules/`.

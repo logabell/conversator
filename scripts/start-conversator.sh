@@ -41,8 +41,9 @@ fi
 OPENCODE_CONFIG_DIR="${PROJECT_ROOT}/.conversator/opencode"
 export OPENCODE_CONFIG_DIR
 
-# Default port for OpenCode HTTP serve (4096 is OpenCode's default)
-PORT="${CONVERSATOR_PORT:-4096}"
+# Default port for Conversator Layer 2 OpenCode server
+# (Use a non-default port so it won't conflict with your normal OpenCode builder instance.)
+PORT="${CONVERSATOR_PORT:-4158}"
 
 echo "Starting Conversator orchestration layer..."
 echo "  Port: $PORT"

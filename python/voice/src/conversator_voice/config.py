@@ -12,7 +12,7 @@ class BuilderConfig:
     """Builder agent configuration."""
 
     type: str = "opencode"
-    port: int = 8002
+    port: int = 4096
     model: str = "opencode/gemini-3-flash"
     worktree_prefix: str = ""
 
@@ -22,7 +22,7 @@ class ConversatorConfig:
     """Main configuration for Conversator."""
 
     root_project_dir: str = "."
-    conversator_port: int = 4096
+    conversator_port: int = 4158
 
     @property
     def opencode_base_url(self) -> str:
@@ -48,7 +48,7 @@ class ConversatorConfig:
     # OpenCode orchestration config (Layer 2)
     # Auto-start is now smart - does proper setup like scripts/start-conversator.sh
     opencode_auto_start: bool = True
-    opencode_port: int = 4096  # Matches conversator.port in config.yaml
+    opencode_port: int = 4158  # Matches conversator.port in config.yaml
     opencode_start_timeout: float = 30.0
     opencode_config_dir: str = ".conversator/opencode"
 
@@ -75,7 +75,7 @@ class ConversatorConfig:
             if isinstance(builder_data, dict):
                 builders[name] = BuilderConfig(
                     type=builder_data.get("type", "opencode"),
-                    port=builder_data.get("port", 8002),
+                    port=builder_data.get("port", 4096),
                     model=builder_data.get("model", "opencode/gemini-3-flash"),
                     worktree_prefix=builder_data.get("worktree_prefix", ""),
                 )
@@ -90,14 +90,14 @@ class ConversatorConfig:
 
         return cls(
             root_project_dir=data.get("root_project_dir", "."),
-            conversator_port=conversator_data.get("port", 4096),
+            conversator_port=conversator_data.get("port", 4158),
             models=data.get("models", {}),
             builders=builders,
             voice_system_prompt=voice_system_prompt,
             voice_speech_threshold=voice_speech_threshold,
             # OpenCode settings from conversator section
             opencode_auto_start=conversator_data.get("auto_start", False),
-            opencode_port=conversator_data.get("port", 4096),
+            opencode_port=conversator_data.get("port", 4158),
             opencode_start_timeout=conversator_data.get("start_timeout", 30.0),
             opencode_config_dir=conversator_data.get(
                 "opencode_config_dir", ".conversator/opencode"

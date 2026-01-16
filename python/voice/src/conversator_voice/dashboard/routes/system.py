@@ -29,7 +29,7 @@ async def health_check(request: Request):
             healthy = await opencode_client.health_check()
             components["opencode_orchestration"] = {
                 "status": "connected" if healthy else "disconnected",
-                "port": config.opencode_port if config else 8001,
+                "port": config.opencode_port if config else 4158,
                 "managed": opencode_manager.is_managed if opencode_manager else False,
                 "running": opencode_manager.is_running if opencode_manager else False,
             }

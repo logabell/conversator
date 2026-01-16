@@ -24,7 +24,7 @@ import httpx
 class OpenCodeClient:
     """Client for communicating with OpenCode agents via HTTP API."""
 
-    def __init__(self, base_url: str = "http://localhost:4096"):
+    def __init__(self, base_url: str = "http://localhost:4158"):
         self.base_url = base_url.rstrip("/")
         # Message polling can run for a while; keep per-request timeouts modest but not tiny.
         self.client = httpx.AsyncClient(timeout=httpx.Timeout(30.0, read=30.0))

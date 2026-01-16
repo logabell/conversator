@@ -5,14 +5,13 @@ subagents for planning, context retrieval, and summarization. This is CRITICAL
 for the voice conversation to have "brains".
 
 Architecture:
-- Layer 2 (this): OpenCode on port 4096 - orchestration/subagents
-- Layer 3: Separate builders on different ports (8002, 8003, etc.)
+- Layer 2 (this): OpenCode on port 4158 - orchestration/subagents
+- Layer 3: Builder OpenCode server on port 4096
 """
 
 import asyncio
 import logging
 import os
-import re
 import select
 import shutil
 import subprocess
@@ -38,7 +37,7 @@ class OpenCodeManager:
 
     def __init__(
         self,
-        port: int = 4096,
+        port: int = 4158,
         working_dir: Optional[str] = None,
         start_timeout: float = 30.0,
         config_dir: str = ".conversator/opencode",
@@ -113,6 +112,14 @@ class OpenCodeManager:
                 text=True,
             )
             self._started_by_us = True
+
+            # Write PID file (used for safe stale-process cleanup).
+            try:
+                pid_path = self.working_dir / ".conversator" / "cache" / "conversator.pid"
+                pid_path.parent.mkdir(parents=True, exist_ok=True)
+                pid_path.write_text(str(self.process.pid))
+            except Exception as e:
+                logger.debug(f"Failed to write pid file: {e}")
 
             # Start a background task to log output
             asyncio.create_task(self._log_output())
@@ -248,37 +255,68 @@ class OpenCodeManager:
             return False
 
     async def _cleanup_stale_processes(self) -> None:
-        """Clean up any stale OpenCode processes holding the port.
+        """Clean up stale OpenCode processes started by Conversator.
 
-        Uses ss command which is more reliable than lsof for detecting listening sockets.
+        Safety policy: never kill arbitrary `opencode` processes.
+
+        We only attempt cleanup if a pid file exists (written by
+        scripts/start-conversator.sh or when this manager starts OpenCode).
         """
+        pid_path = self.working_dir / ".conversator" / "cache" / "conversator.pid"
+        if not pid_path.exists():
+            return
+
         try:
-            # Use ss to find processes listening on our port
-            result = subprocess.run(
-                ["ss", "-tlnp", f"sport = :{self.port}"],
-                capture_output=True,
-                text=True,
+            pid = int(pid_path.read_text().strip())
+        except Exception:
+            try:
+                pid_path.unlink()
+            except OSError:
+                pass
+            return
+
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            # Stale pid file.
+            try:
+                pid_path.unlink()
+            except OSError:
+                pass
+            return
+
+        try:
+            cmdline = Path(f"/proc/{pid}/cmdline").read_text(errors="ignore")
+        except OSError:
+            cmdline = ""
+
+        cmdline_lower = cmdline.replace("\x00", " ").lower()
+        if "opencode" not in cmdline_lower or "serve" not in cmdline_lower:
+            logger.warning(
+                f"PID file {pid_path} points to a non-OpenCode process; leaving it alone."
             )
-            if result.returncode == 0 and "opencode" in result.stdout:
-                # Extract PID from output like: users:(("opencode",pid=12345,fd=15))
-                match = re.search(r'pid=(\d+)', result.stdout)
-                if match:
-                    pid = int(match.group(1))
-                    logger.warning(f"Found stale OpenCode process (PID {pid}) on port {self.port}, killing...")
-                    try:
-                        os.kill(pid, 15)  # SIGTERM
-                        await asyncio.sleep(2)
-                        # Check if still running
-                        try:
-                            os.kill(pid, 0)  # Just check
-                            os.kill(pid, 9)  # SIGKILL
-                            await asyncio.sleep(1)
-                        except OSError:
-                            pass  # Process already dead
-                    except OSError as e:
-                        logger.debug(f"Could not kill PID {pid}: {e}")
-        except Exception as e:
-            logger.debug(f"Stale process cleanup failed: {e}")
+            return
+
+        if f"--port {self.port}" not in cmdline_lower:
+            logger.warning(
+                f"PID file {pid_path} does not appear to match port {self.port}; leaving it alone."
+            )
+            return
+
+        logger.warning(
+            f"Found stale Conversator OpenCode process (PID {pid}) on port {self.port}, terminating..."
+        )
+        try:
+            os.kill(pid, 15)  # SIGTERM
+            await asyncio.sleep(2)
+            try:
+                os.kill(pid, 0)
+            except OSError:
+                return
+            os.kill(pid, 9)  # SIGKILL
+            await asyncio.sleep(1)
+        except OSError as e:
+            logger.debug(f"Could not terminate PID {pid}: {e}")
 
     async def _log_output(self) -> None:
         """Background task to log OpenCode output (non-blocking)."""
@@ -320,6 +358,11 @@ class OpenCodeManager:
             except Exception as e:
                 logger.error(f"Error stopping OpenCode: {e}")
             finally:
+                try:
+                    pid_path = self.working_dir / ".conversator" / "cache" / "conversator.pid"
+                    pid_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
                 self.process = None
                 self._started_by_us = False
 

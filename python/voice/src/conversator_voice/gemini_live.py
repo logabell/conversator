@@ -207,8 +207,8 @@ Be concise - this is voice, not text."""
         - Avoid starting waiting music too early.
 
         If Gemini fails to call tools, we stage a relay draft instead of sending
-        immediately. This allows a quick clarification ("What should we brainstorm?")
-        and a confirmation step before dispatching to the brainstormer.
+        immediately. This allows a quick clarification and a confirmation step
+        before dispatching to a subagent.
         """
         if self._last_turn_had_tool_call:
             return
@@ -305,41 +305,6 @@ Be concise - this is voice, not text."""
                 )
                 await self.announce(confirm_prompt, priority="immediate")
                 return
-
-        conv = state.active_subagent_conversation
-        if conv is not None:
-            # Q&A backstop: if Gemini didn't call continue_* tools, treat the user's
-            # last turn as the next answer for the active subagent conversation.
-            if conv.subagent_name == "planner":
-                result = await self.tool_handler.handle_continue_planner(transcript)
-            elif conv.subagent_name == "brainstormer":
-                result = await self.tool_handler.handle_continue_brainstormer(transcript)
-            else:
-                return
-
-            if isinstance(result, dict):
-                say = result.get("say") or result.get("relay_to_user")
-                thread_id = result.get("thread_id")
-                if isinstance(say, str) and say.strip():
-                    state.enqueue_announcement(say, kind="info", thread_id=thread_id)
-                elif "error" in result:
-                    state.enqueue_announcement(
-                        f"I hit an error continuing the {conv.subagent_name}: {result['error']}",
-                        kind="error",
-                        thread_id=thread_id,
-                    )
-
-            return
-
-        # Intent backstop: if the user asked to brainstorm but Gemini didn't call
-        # engage_brainstormer, stage the relay draft.
-        if "brainstorm" in transcript.lower():
-            result = await self.tool_handler.handle_engage_brainstormer(topic=transcript)
-            if isinstance(result, dict):
-                say = result.get("say") or result.get("relay_to_user")
-                if isinstance(say, str) and say.strip():
-                    state.enqueue_announcement(say, kind="info")
-            return
 
         return
 
@@ -1188,6 +1153,7 @@ Be concise - this is voice, not text."""
             # Planning and context
             "engage_planner": self.tool_handler.handle_engage_planner,
             "continue_planner": self.tool_handler.handle_continue_planner,
+            "finalize_builder_prompt": self.tool_handler.handle_finalize_builder_prompt,
             "lookup_context": self.tool_handler.handle_lookup_context,
             "check_status": self.tool_handler.handle_check_status,
             "dispatch_to_builder": self.tool_handler.handle_dispatch_to_builder,
@@ -1211,6 +1177,7 @@ Be concise - this is voice, not text."""
             "focus_thread": self.tool_handler.handle_focus_thread,
             "open_thread": self.tool_handler.handle_open_thread,
             # Builder plan management
+            "send_to_builder": self.tool_handler.handle_send_to_builder,
             "get_builder_plan": self.tool_handler.handle_get_builder_plan,
             "approve_builder_plan": self.tool_handler.handle_approve_builder_plan,
         }
@@ -1258,7 +1225,7 @@ class ConversatorSession:
     def __init__(
         self,
         api_key: str,
-        opencode_url: str = "http://localhost:8001",
+        opencode_url: str = "http://localhost:4158",
         workspace_path: str = ".conversator",
         config: ConversatorConfig | None = None,
     ):

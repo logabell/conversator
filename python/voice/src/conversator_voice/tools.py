@@ -72,7 +72,7 @@ CONVERSATOR_TOOLS: list[dict[str, Any]] = [
         - 'plan an auth flow for the website'
 
         This avoids extra back-and-forth: it selects the project, starts the builder,
-        then begins either planner or brainstormer flow.""",
+        then begins the planner flow.""",
         "parameters": {
             "type": "object",
             "properties": {
@@ -86,7 +86,7 @@ CONVERSATOR_TOOLS: list[dict[str, Any]] = [
                 },
                 "subagent": {
                     "type": "string",
-                    "enum": ["planner", "brainstormer"],
+                    "enum": ["planner"],
                     "description": "Which subagent to engage",
                 },
                 "topic": {
@@ -130,49 +130,31 @@ CONVERSATOR_TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "continue_planner",
-        "description": """Continue an active planner session after the user answers
-        the planner's clarifying question(s). Use ONLY after engage_planner returns
-        status='needs_input'. Do not call engage_planner again for the same task -
-        that would restart the planner and can cause looping questions.""",
+        "description": """Continue the active planner conversation.
+        Use for follow-up questions, refinements, or additional constraints after engage_planner.""",
         "parameters": {
             "type": "object",
             "properties": {
                 "user_response": {
                     "type": "string",
-                    "description": "The user's answer to the planner's question(s)",
+                    "description": "The user's message to the planner",
                 }
             },
             "required": ["user_response"],
         },
     },
     {
-        "name": "confirm_send_to_subagent",
-        "description": """Confirm and send collected answers/context to the active subagent.
-        Use after all questions are answered and the user confirms you're ready to send.""",
+        "name": "finalize_builder_prompt",
+        "description": """Ask the planner for the final Markdown builder prompt and save it.
+        Use when the user says we're done brainstorming and ready to send to the builder.""",
         "parameters": {
             "type": "object",
             "properties": {
-                "additional_context": {
+                "filename": {
                     "type": "string",
-                    "description": "Optional extra context to include when sending",
+                    "description": "Optional filename (without path). Defaults to an auto-generated name.",
                 }
             },
-        },
-    },
-    {
-        "name": "continue_brainstormer",
-        "description": """Continue an active brainstorm relay.
-        Use after engage_brainstormer returns status='needs_detail' or 'needs_confirmation',
-        or when relaying answers back to brainstormer questions.""",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "user_response": {
-                    "type": "string",
-                    "description": "The user's message/answer/confirmation",
-                }
-            },
-            "required": ["user_response"],
         },
     },
     {
@@ -381,31 +363,6 @@ CONVERSATOR_TOOLS: list[dict[str, Any]] = [
         },
     },
     {
-        "name": "engage_brainstormer",
-        "description": """Start a brainstorm relay draft.
-
-        IMPORTANT: this does NOT immediately send anything to a subagent.
-        Use it when the user says they want to brainstorm. Then:
-        - Ask the user for their full thoughts/details.
-        - Ask for confirmation ("Anything else?" / "Want me to send?").
-        - Only after confirmation (or silence auto-confirm) will Conversator
-          relay the message to the brainstormer subagent in OpenCode.
-        """,
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "topic": {"type": "string", "description": "What to brainstorm or discuss"},
-                "context": {"type": "string", "description": "Relevant context for the discussion"},
-                "constraints": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Any constraints to keep in mind",
-                },
-            },
-            "required": ["topic"],
-        },
-    },
-    {
         "name": "start_subagent_thread",
         "description": """Start a NEW subagent session thread.
         Use when you want multiple concurrent brainstorms or plans.""",
@@ -414,7 +371,7 @@ CONVERSATOR_TOOLS: list[dict[str, Any]] = [
             "properties": {
                 "subagent": {
                     "type": "string",
-                    "enum": ["planner", "brainstormer"],
+                    "enum": ["planner"],
                     "description": "Which subagent to start",
                 },
                 "topic": {
@@ -443,7 +400,7 @@ CONVERSATOR_TOOLS: list[dict[str, Any]] = [
                 },
                 "subagent": {
                     "type": "string",
-                    "enum": ["planner", "brainstormer"],
+                    "enum": ["planner"],
                     "description": "Subagent name (required if creating a new thread)",
                 },
                 "topic": {
@@ -489,10 +446,25 @@ CONVERSATOR_TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "send_to_builder",
+        "description": """Send a message to the active builder session and wait for a reply.
+        Use in plan mode to answer the builder's questions and iterate on the plan.""",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "message": {"type": "string", "description": "Message to send to the builder"},
+                "task_id": {
+                    "type": "string",
+                    "description": "Optional task ID (defaults to current task)",
+                },
+            },
+            "required": ["message"],
+        },
+    },
+    {
         "name": "get_builder_plan",
-        "description": """Get the plan response from a builder in plan mode.
-        Use after dispatch_to_builder with mode='plan' to see what the builder
-        proposes before implementation begins.""",
+        "description": """Get the latest builder response from the plan session.
+        Use after dispatch_to_builder (plan mode) to read the proposal and questions.""",
         "parameters": {
             "type": "object",
             "properties": {"task_id": {"type": "string", "description": "Task ID to get plan for"}},

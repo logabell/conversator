@@ -8,8 +8,6 @@ or OpenCode defaults.
 
 import asyncio
 import logging
-import os
-import re
 import select
 import subprocess
 import sys
@@ -31,7 +29,7 @@ class BuilderManager:
     - Clean shutdown when switching projects or exiting
     """
 
-    def __init__(self, port: int = 8001, start_timeout: float = 30.0):
+    def __init__(self, port: int = 4096, start_timeout: float = 30.0):
         """Initialize builder manager.
 
         Args:
@@ -69,8 +67,8 @@ class BuilderManager:
             logger.info(f"OpenCode builder already running at port {self.port}")
             return True
 
-        # Check for stale processes holding the port
-        await self._cleanup_stale_processes()
+        # If the port is in use but the server isn't healthy, do NOT try to kill
+        # anything automatically. The user may be running their own OpenCode instance.
 
         # Start the process
         logger.info(f"Starting OpenCode builder on port {self.port} in {project_dir}...")
@@ -179,33 +177,12 @@ class BuilderManager:
             return False
 
     async def _cleanup_stale_processes(self) -> None:
-        """Clean up any stale OpenCode processes holding the port."""
-        try:
-            # Use ss to find processes listening on our port
-            result = subprocess.run(
-                ["ss", "-tlnp", f"sport = :{self.port}"],
-                capture_output=True,
-                text=True,
-            )
-            if result.returncode == 0 and "opencode" in result.stdout:
-                # Extract PID from output
-                match = re.search(r'pid=(\d+)', result.stdout)
-                if match:
-                    pid = int(match.group(1))
-                    logger.warning(f"Found stale OpenCode process (PID {pid}) on port {self.port}, killing...")
-                    try:
-                        os.kill(pid, 15)  # SIGTERM
-                        await asyncio.sleep(2)
-                        try:
-                            os.kill(pid, 0)  # Just check
-                            os.kill(pid, 9)  # SIGKILL
-                            await asyncio.sleep(1)
-                        except OSError:
-                            pass
-                    except OSError as e:
-                        logger.debug(f"Could not kill PID {pid}: {e}")
-        except Exception as e:
-            logger.debug(f"Stale process cleanup failed: {e}")
+        """Clean up stale builder processes.
+
+        For safety, this is intentionally a no-op. The builder port may be used by
+        a user-managed OpenCode instance, and Conversator must never kill it.
+        """
+        return
 
     async def _log_output(self) -> None:
         """Background task to log OpenCode output (non-blocking)."""

@@ -13,7 +13,7 @@ class OpenCodeBuilder:
 
         Args:
             name: Builder name (e.g., 'opencode-fast')
-            base_url: Base URL for the builder (e.g., 'http://localhost:8002')
+            base_url: Base URL for the builder (e.g., 'http://localhost:4096')
             model: Model identifier for this builder
         """
         self.name = name
@@ -22,6 +22,7 @@ class OpenCodeBuilder:
         self.client = httpx.AsyncClient(timeout=600)
         self.active_sessions: dict[str, str] = {}  # task_id -> session_id
         self.plan_sessions: dict[str, str] = {}  # task_id -> session_id (for plan mode)
+        self.task_directories: dict[str, str] = {}  # task_id -> directory
 
     async def close(self) -> None:
         """Close the HTTP client."""
@@ -66,9 +67,15 @@ All file operations should be relative to this directory.
 """
             prompt_content = context + prompt_content
 
+        params = {"directory": project_root} if project_root else None
+        if project_root:
+            self.task_directories[task_id] = project_root
+
         # Create session
         response = await self.client.post(
-            f"{self.base_url}/session", json={"title": f"Task: {task_id[:8]}"}
+            f"{self.base_url}/session",
+            params=params,
+            json={"title": f"Task: {task_id[:8]}"},
         )
 
         if response.status_code not in (200, 201):
@@ -84,10 +91,11 @@ All file operations should be relative to this directory.
         # Send the prompt asynchronously
         prompt_response = await self.client.post(
             f"{self.base_url}/session/{session_id}/prompt_async",
-            json={"parts": [{"type": "text", "text": prompt_content}]},
+            params=params,
+            json={"agent": "build", "parts": [{"type": "text", "text": prompt_content}]},
         )
 
-        if prompt_response.status_code not in (200, 201, 202):
+        if prompt_response.status_code not in (200, 201, 202, 204):
             return {
                 "dispatched": False,
                 "session_id": session_id,
@@ -105,15 +113,21 @@ All file operations should be relative to this directory.
         Returns:
             Session status string or None if not found
         """
-        session_id = self.active_sessions.get(task_id)
+        session_id = self.active_sessions.get(task_id) or self.plan_sessions.get(task_id)
         if not session_id:
             return None
 
         try:
-            response = await self.client.get(f"{self.base_url}/session/{session_id}")
-            if response.status_code == 200:
-                data = response.json()
-                return data.get("status")
+            response = await self.client.get(f"{self.base_url}/session/status")
+            if response.status_code != 200:
+                return None
+
+            statuses = response.json()
+            status = statuses.get(session_id)
+            if isinstance(status, dict):
+                status_type = status.get("type")
+                if isinstance(status_type, str):
+                    return status_type
         except Exception:
             pass
         return None
@@ -127,13 +141,19 @@ All file operations should be relative to this directory.
         Returns:
             List of message dicts
         """
-        session_id = self.active_sessions.get(task_id)
+        session_id = self.active_sessions.get(task_id) or self.plan_sessions.get(task_id)
         if not session_id:
             return []
 
         try:
+            directory = self.task_directories.get(task_id)
+            params = {"directory": directory} if directory else None
+
             # OpenCode server v1.1+: messages are listed at /session/:id/message
-            response = await self.client.get(f"{self.base_url}/session/{session_id}/message")
+            response = await self.client.get(
+                f"{self.base_url}/session/{session_id}/message",
+                params=params,
+            )
             if response.status_code == 200:
                 return response.json()
         except Exception:
@@ -149,15 +169,23 @@ All file operations should be relative to this directory.
         Returns:
             True if canceled successfully
         """
-        session_id = self.active_sessions.get(task_id)
+        session_id = self.active_sessions.get(task_id) or self.plan_sessions.get(task_id)
         if not session_id:
             return False
 
         try:
+            directory = self.task_directories.get(task_id)
+            params = {"directory": directory} if directory else None
+
             # OpenCode server v1.1+: abort a running session via /session/:id/abort
-            response = await self.client.post(f"{self.base_url}/session/{session_id}/abort")
+            response = await self.client.post(
+                f"{self.base_url}/session/{session_id}/abort",
+                params=params,
+            )
             if response.status_code in (200, 204):
-                del self.active_sessions[task_id]
+                self.active_sessions.pop(task_id, None)
+                self.plan_sessions.pop(task_id, None)
+                self.task_directories.pop(task_id, None)
                 return True
         except Exception:
             pass
@@ -166,7 +194,7 @@ All file operations should be relative to this directory.
     async def dispatch_task_plan_mode(
         self, task_id: str, prompt_path: str, project_root: str | None = None
     ) -> dict[str, Any]:
-        """Dispatch to builder in plan mode (OpenCode's /plan).
+        """Dispatch to builder using OpenCode's `plan` agent.
 
         Args:
             task_id: Unique task identifier
@@ -190,12 +218,17 @@ All file operations should be relative to this directory.
 """
             prompt_content = context + prompt_content
 
-        # Prefix with /plan to enter OpenCode's plan mode
-        plan_prompt = f"/plan {prompt_content}"
+        # Use OpenCode's built-in `plan` agent for planning.
+
+        params = {"directory": project_root} if project_root else None
+        if project_root:
+            self.task_directories[task_id] = project_root
 
         # Create session
         response = await self.client.post(
-            f"{self.base_url}/session", json={"title": f"Plan: {task_id[:8]}"}
+            f"{self.base_url}/session",
+            params=params,
+            json={"title": f"Plan: {task_id[:8]}"},
         )
 
         if response.status_code not in (200, 201):
@@ -211,10 +244,11 @@ All file operations should be relative to this directory.
         # Send the plan prompt
         prompt_response = await self.client.post(
             f"{self.base_url}/session/{session_id}/prompt_async",
-            json={"parts": [{"type": "text", "text": plan_prompt}]},
+            params=params,
+            json={"agent": "plan", "parts": [{"type": "text", "text": prompt_content}]},
         )
 
-        if prompt_response.status_code not in (200, 201, 202):
+        if prompt_response.status_code not in (200, 201, 202, 204):
             return {
                 "dispatched": False,
                 "session_id": session_id,
@@ -229,21 +263,20 @@ All file operations should be relative to this directory.
         }
 
     async def get_plan_response(self, task_id: str) -> dict[str, Any]:
-        """Retrieve the plan generated by OpenCode.
-
-        Args:
-            task_id: Task identifier
-
-        Returns:
-            Dict with plan content
-        """
-        session_id = self.plan_sessions.get(task_id)
+        """Retrieve the latest assistant response from the builder session."""
+        session_id = self.plan_sessions.get(task_id) or self.active_sessions.get(task_id)
         if not session_id:
-            return {"error": "No plan session found"}
+            return {"error": "No session found"}
 
         try:
+            directory = self.task_directories.get(task_id)
+            params = {"directory": directory} if directory else None
+
             # OpenCode server v1.1+: messages are listed at /session/:id/message
-            response = await self.client.get(f"{self.base_url}/session/{session_id}/message")
+            response = await self.client.get(
+                f"{self.base_url}/session/{session_id}/message",
+                params=params,
+            )
             if response.status_code != 200:
                 return {"error": f"Failed to get messages: {response.status_code}"}
 
@@ -275,6 +308,64 @@ All file operations should be relative to this directory.
         except Exception as e:
             return {"error": str(e)}
 
+    async def send_to_task(
+        self,
+        task_id: str,
+        message: str,
+        agent: str | None = None,
+    ) -> dict[str, Any]:
+        """Send a message to an existing builder session and wait for response."""
+        session_id = None
+        default_agent = None
+
+        if task_id in self.plan_sessions:
+            session_id = self.plan_sessions[task_id]
+            default_agent = "plan"
+        elif task_id in self.active_sessions:
+            session_id = self.active_sessions[task_id]
+            default_agent = "build"
+
+        if not session_id:
+            return {"error": "No builder session found for task", "task_id": task_id}
+
+        chosen_agent = agent or default_agent or "build"
+
+        try:
+            directory = self.task_directories.get(task_id)
+            params = {"directory": directory} if directory else None
+
+            response = await self.client.post(
+                f"{self.base_url}/session/{session_id}/message",
+                params=params,
+                json={
+                    "agent": chosen_agent,
+                    "parts": [{"type": "text", "text": message}],
+                },
+            )
+            if response.status_code != 200:
+                return {
+                    "error": f"Failed to send message: {response.status_code}",
+                    "session_id": session_id,
+                    "task_id": task_id,
+                }
+
+            payload = response.json()
+            parts = payload.get("parts", [])
+            content = ""
+            for part in parts:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    content += part.get("text", "")
+
+            return {
+                "session_id": session_id,
+                "task_id": task_id,
+                "agent": chosen_agent,
+                "response": content,
+            }
+
+        except Exception as e:
+            return {"error": str(e), "session_id": session_id, "task_id": task_id}
+
     async def approve_and_build(self, task_id: str, modifications: str = "") -> dict[str, Any]:
         """Exit plan mode and start building.
 
@@ -290,18 +381,23 @@ All file operations should be relative to this directory.
             return {"error": "No plan session found"}
 
         try:
-            # Send approval message to exit plan mode
+            # Switch to OpenCode's built-in `build` agent for implementation.
             if modifications:
-                approval_msg = f"Proceed with these modifications: {modifications}"
+                approval_msg = f"implement the plan\n\nModifications:\n{modifications}"
             else:
-                approval_msg = "Looks good, proceed with the implementation."
+                approval_msg = "implement the plan"
+
+            directory = self.task_directories.get(task_id)
+            params = {"directory": directory} if directory else None
 
             response = await self.client.post(
                 f"{self.base_url}/session/{session_id}/prompt_async",
-                json={"parts": [{"type": "text", "text": approval_msg}]},
+                params=params,
+                json={"agent": "build", "parts": [{"type": "text", "text": approval_msg}]},
             )
 
-            if response.status_code not in (200, 201, 202):
+
+            if response.status_code not in (200, 201, 202, 204):
                 return {
                     "building": False,
                     "error": f"Failed to send approval: {response.status_code}",
